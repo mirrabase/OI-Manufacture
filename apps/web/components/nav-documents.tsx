@@ -29,12 +29,15 @@ export function NavDocuments({
 }) {
   const { isMobile } = useSidebar()
   return (
-    <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+    <SidebarGroup>
       <SidebarGroupLabel>Documents</SidebarGroupLabel>
       <SidebarMenu>
         {items.map((item) => (
           <SidebarMenuItem key={item.name}>
-            <SidebarMenuButton render={<a href={item.url} />}>
+            <SidebarMenuButton
+              tooltip={item.name}
+              render={<a href={item.url} />}
+            >
               {item.icon}
               <span>{item.name}</span>
             </SidebarMenuButton>
@@ -77,7 +80,10 @@ export function NavDocuments({
           </SidebarMenuItem>
         ))}
         <SidebarMenuItem>
-          <SidebarMenuButton className="text-sidebar-foreground/70">
+          <SidebarMenuButton
+            tooltip="More"
+            className="text-sidebar-foreground/70"
+          >
             <MoreHorizontalIcon className="text-sidebar-foreground/70" />
             <span>More</span>
           </SidebarMenuButton>
