@@ -23,6 +23,7 @@ dist
 
 # turbo
 .turbo
+.local/
 
 # misc
 .DS_Store

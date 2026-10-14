@@ -1,0 +1,23 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function manufacturer() {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/manufacturers/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/manufacturers/$(request.auth.uid)).data.active == true;
+    }
+    function requestOwner(uid, rfqId) {
+      return firestore.exists(/databases/(default)/documents/rfqs/$(rfqId))
+        && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.ownerUid == uid;
+    }
+    match /rfqs/{uid}/{rfqId}/{fileName} {
+      allow read: if signedIn() && ((request.auth.uid == uid && requestOwner(uid, rfqId)) || (manufacturer() && requestOwner(uid, rfqId) && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.status in ['Submitted', 'Quoted', 'In Production']));
+      allow write: if signedIn() && request.auth.uid == uid && requestOwner(uid, rfqId)
+        && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.status == 'Draft'
+        && fileName.matches('.*\\.[sS][tT][lL]')
+        && request.resource.size <= 50 * 1024 * 1024
+        && request.resource.contentType == 'model/stl';
+    }
+  }
+}

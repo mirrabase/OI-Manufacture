@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function manufacturer() {
+      return signedIn() && exists(/databases/$(database)/documents/manufacturers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/manufacturers/$(request.auth.uid)).data.active == true;
+    }
+    match /manufacturers/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+    match /pricing/default {
+      allow read: if manufacturer();
+      allow create, update: if manufacturer()
+        && request.resource.data.keys().hasAll(['materialPerKg', 'machinePerHour', 'setup', 'markupPercent', 'minimumTotal', 'layerHeight', 'infillPercent'])
+        && request.resource.data.keys().hasOnly(['materialPerKg', 'machinePerHour', 'setup', 'markupPercent', 'minimumTotal', 'layerHeight', 'infillPercent'])
+        && validRate(request.resource.data.materialPerKg)
+        && validRate(request.resource.data.machinePerHour)
+        && validRate(request.resource.data.setup)
+        && validRate(request.resource.data.minimumTotal)
+        && request.resource.data.markupPercent is number && request.resource.data.markupPercent >= 0 && request.resource.data.markupPercent <= 500
+        && request.resource.data.layerHeight is number && request.resource.data.layerHeight >= 0.08 && request.resource.data.layerHeight <= 0.32
+        && request.resource.data.infillPercent is number && request.resource.data.infillPercent >= 0 && request.resource.data.infillPercent <= 100;
+    }
+    function validRate(value) { return value is int && value >= 0 && value <= 10000000; }
+    match /rfqs/{rfqId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.status == 'Draft'
+        && request.resource.data.keys().hasOnly(['ownerUid', 'customer', 'product', 'requirements', 'model', 'status', 'paymentStatus', 'createdAt'])
+        && request.resource.data.paymentStatus == 'Unpaid'
+        && request.resource.data.createdAt is int
+        && request.resource.data.customer is map
+        && request.resource.data.customer.keys().hasOnly(['name', 'email'])
+        && request.resource.data.customer.name is string
+        && request.resource.data.customer.email is string
+        && request.resource.data.requirements is map
+        && request.resource.data.requirements.keys().hasOnly(['quantity', 'material', 'process', 'unit', 'notes'])
+        && request.resource.data.requirements.quantity is int
+        && request.resource.data.requirements.quantity > 0
+        && request.resource.data.requirements.quantity <= 100000
+        && request.resource.data.requirements.material is string
+        && request.resource.data.requirements.process is string
+        && request.resource.data.requirements.unit in ['mm', 'inch']
+        && request.resource.data.requirements.notes is string
+        && request.resource.data.product is string
+        && request.resource.data.product.size() > 0
+        && request.resource.data.model is map
+        && request.resource.data.model.keys().hasOnly(['name', 'size', 'contentType', 'storagePath', 'boundingBoxMm', 'volumeCm3'])
+        && request.resource.data.model.name is string
+        && request.resource.data.model.size is int
+        && request.resource.data.model.size > 0
+        && request.resource.data.model.size <= 50 * 1024 * 1024
+        && request.resource.data.model.contentType == 'model/stl'
+        && request.resource.data.model.boundingBoxMm is list
+        && request.resource.data.model.boundingBoxMm.size() == 3
+        && request.resource.data.model.storagePath.matches('rfqs/' + request.auth.uid + '/' + rfqId + '/.*');
+      allow read: if signedIn() && (resource == null || resource.data.ownerUid == request.auth.uid || (manufacturer() && resource.data.status in ['Submitted', 'Quoted', 'In Production']));
+      allow update: if manufacturer() && resource.data.status == 'Submitted'
+        && request.resource.data.status == 'Quoted'
+        && request.resource.data.quoteTotal is int
+        && request.resource.data.quoteTotal > 0
+        && request.resource.data.paymentStatus == 'Unpaid'
+        && request.resource.data.quotedAt is int
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'quoteTotal', 'paymentStatus', 'quotedAt'])
+        || (manufacturer() && resource.data.status == 'Quoted'
+          && request.resource.data.status == 'Quoted'
+          && request.resource.data.quoteTotal is int
+          && request.resource.data.quoteTotal > 0
+          && request.resource.data.paymentStatus == 'Unpaid'
+          && request.resource.data.quotedAt is int
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quoteTotal', 'quotedAt']))
+        || (manufacturer() && resource.data.status == 'Quoted'
+          && resource.data.paymentStatus == 'Unpaid'
+          && resource.data.quoteTotal is int
+          && resource.data.quoteTotal > 0
+          && request.resource.data.status == 'In Production'
+          && request.resource.data.paymentStatus == 'Paid'
+          && request.resource.data.paidAt is int
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paymentStatus', 'paidAt']))
+        || (manufacturer() && resource.data.status in ['Submitted', 'Quoted']
+          && resource.data.paymentStatus == 'Unpaid'
+          && (!('estimate' in resource.data) || resource.data.estimate.status != 'processing')
+          && request.resource.data.estimateRequestedAt is int
+          && request.resource.data.estimateRequestedAt > resource.data.get('estimateRequestedAt', 0)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estimateRequestedAt']))
+        || (signedIn() && resource.data.ownerUid == request.auth.uid
+        && resource.data.status == 'Draft'
+        && request.resource.data.status == 'Submitted'
+        && request.resource.data.submittedAt is int
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'submittedAt']));
+      allow delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
