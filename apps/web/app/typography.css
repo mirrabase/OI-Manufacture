@@ -1,0 +1,15 @@
+:root {
+  --text-xs: 14px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 20px;
+  --text-3xl: 20px;
+  --text-4xl: 20px;
+  --text-5xl: 20px;
+  --text-6xl: 20px;
+  --text-7xl: 20px;
+  --text-8xl: 20px;
+  --text-9xl: 20px;
+}
