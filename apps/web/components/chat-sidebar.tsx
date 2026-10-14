@@ -125,7 +125,7 @@ export function ChatSidebar() {
           aria-expanded={isOpen}
           title={isOpen ? "Close chat" : "Open chat"}
           className="size-6 justify-center rounded-full [&_svg]:size-4"
-          onClick={() => setIsOpen((open) => !open)}
+          onClick={() => setIsOpen(!isOpen)}
         >
           <MessageCircleIcon />
         </Button>
