@@ -14,6 +14,7 @@ import {
 } from "@workspace/ui/components/breadcrumb"
 
 function formatSegment(segment: string) {
+  if (segment === "dashboard") return "Overview"
   return segment
     .split("-")
     .filter(Boolean)
