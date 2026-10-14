@@ -3,12 +3,12 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { FirebaseError } from "firebase/app"
-import { GoogleAuthProvider, signInWithPopup } from "firebase/auth"
+import { GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword } from "firebase/auth"
 
 import { Button } from "@workspace/ui/components/button"
-import { auth } from "@/lib/firebase/client"
+import { manufacturerAuth, useFirebaseEmulator } from "@/lib/firebase/client"
 
-export function GoogleLoginButton() {
+export function GoogleLoginButton({ destination = "/-/overview" }: { destination?: string }) {
   const router = useRouter()
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -18,8 +18,9 @@ export function GoogleLoginButton() {
     setIsSigningIn(true)
 
     try {
-      await signInWithPopup(auth, new GoogleAuthProvider())
-      router.replace("/-/")
+      if (useFirebaseEmulator) await signInWithEmailAndPassword(manufacturerAuth, "manufacturer@oi.local", "local-manufacturer-123")
+      else await signInWithPopup(manufacturerAuth, new GoogleAuthProvider())
+      router.replace(destination)
       router.refresh()
     } catch (cause) {
       if (
@@ -32,7 +33,7 @@ export function GoogleLoginButton() {
       setError(
         cause instanceof FirebaseError && cause.code === "auth/unauthorized-domain"
           ? "This domain is not enabled for Google sign-in in Firebase."
-          : "Could not sign in with Google. Please try again."
+          : useFirebaseEmulator ? "Local Manufacturer unavailable. Start pnpm dev or run pnpm seed:local with the emulators running." : "Could not sign in with Google. Please try again."
       )
     } finally {
       setIsSigningIn(false)
@@ -54,7 +55,7 @@ export function GoogleLoginButton() {
         disabled={isSigningIn}
         onClick={handleGoogleSignIn}
       >
-        <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4">
+        {!useFirebaseEmulator ? <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4">
           <path
             fill="#4285F4"
             d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1Z"
@@ -71,9 +72,10 @@ export function GoogleLoginButton() {
             fill="#EA4335"
             d="M12 5.36c1.62 0 3.06.56 4.21 1.64l3.16-3.16C17.45 2.09 14.97 1 12 1a11 11 0 0 0-9.85 6.05l3.69 2.84C6.71 7.29 9.14 5.36 12 5.36Z"
           />
-        </svg>
-        {isSigningIn ? "Signing in..." : "Continue with Google"}
+        </svg> : null}
+        {isSigningIn ? "Signing in..." : useFirebaseEmulator ? "Sign in as local Manufacturer" : "Continue with Google"}
       </Button>
+      {useFirebaseEmulator ? <p className="text-center text-xs text-muted-foreground">Firebase Emulator · simulation account · no cloud access</p> : null}
       {error ? (
         <p role="alert" className="text-center text-sm text-destructive">
           {error}

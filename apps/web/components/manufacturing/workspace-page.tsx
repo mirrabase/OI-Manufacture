@@ -6,12 +6,9 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   ArrowUpRightIcon,
-  BoxesIcon,
-  CalendarClockIcon,
   FileTextIcon,
   GaugeIcon,
   SearchIcon,
-  Settings2Icon,
 } from "lucide-react"
 import {
   Area,
@@ -27,7 +24,6 @@ import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@workspace/ui/components/card"
 import { Input } from "@workspace/ui/components/input"
-import { Label } from "@workspace/ui/components/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@workspace/ui/components/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@workspace/ui/components/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@workspace/ui/components/table"
@@ -40,7 +36,6 @@ import {
   findEquipment,
   findMaterial,
   formatIDR,
-  insights,
   materials,
   orders,
   productionJobs,
@@ -49,16 +44,19 @@ import {
   quotations,
   rfqs,
 } from "@/lib/mock/manufacturer"
+import { LiveWorkspace, ManufacturerAccess } from "./live-workspace"
+import { PricingSettings } from "./pricing-settings"
 
-type PageKey = "dashboard" | "rfqs" | "quotations" | "orders" | "production" | "materials" | "equipment" | "customers" | "analytics" | "settings"
+type PageKey = "dashboard" | "requests" | "rfqs" | "quotations" | "orders" | "production" | "materials" | "equipment" | "customers" | "analytics" | "settings"
 type DataRow = Record<string, string | number>
 
 const pageInfo: Record<PageKey, { title: string; description: string }> = {
   dashboard: { title: "Overview", description: "A clear view of today’s manufacturing workload and decisions." },
+  requests: { title: "Requests", description: "Track customer requests from price review through production." },
   rfqs: { title: "RFQ Inbox", description: "Review customer requests and assess whether each part is ready to quote." },
   quotations: { title: "Quotations", description: "Track estimated costs, customer approvals, and quote validity." },
-  orders: { title: "Orders", description: "Follow accepted work from confirmation through delivery." },
-  production: { title: "Production", description: "Plan the production queue against scheduled machine capacity." },
+  orders: { title: "Orders", description: "Paid customer requests move into production orders here." },
+  production: { title: "Production", description: "Review paid customer requests that are ready for production." },
   materials: { title: "Materials", description: "Monitor filament and resin inventory for upcoming work." },
   equipment: { title: "Equipment", description: "Review machine capabilities and planned workload." },
   customers: { title: "Customers", description: "Manage customer relationships and manufacturing history." },
@@ -70,58 +68,6 @@ const money = formatIDR
 const customerName = (id: string) => findCustomer(id)?.company ?? id
 const machineName = (id: string) => findEquipment(id)?.name ?? id
 const materialName = (id: string) => findMaterial(id)?.name ?? id
-
-const rfqRows: DataRow[] = rfqs.map((item) => ({
-  "RFQ ID": item.id,
-  Customer: customerName(item.customerId),
-  Product: item.product,
-  "File Type": (item.file.split(" · ")[0] ?? item.file).split(".").at(-1)?.toUpperCase() ?? "CAD",
-  Quantity: item.quantity,
-  "Requested Material": materialName(item.materialId),
-  "Received Date": item.received,
-  "Feasibility Status": item.feasibility,
-  "Risk Level": item.risk,
-}))
-
-const quoteRows: DataRow[] = quotations.map((quote) => ({
-  "Quotation Number": quote.id,
-  Customer: customerName(quote.customerId),
-  "Related RFQ": quote.rfqId,
-  Product: quote.product,
-  Quantity: quote.quantity,
-  "Estimated Cost": money(quotationCost(quote)),
-  "Quoted Price": money(quotationPrice(quote)),
-  Margin: `${quote.marginPercent}%`,
-  "Valid Until": quote.validUntil,
-  Status: quote.status,
-}))
-
-const orderRows: DataRow[] = orders.map((order) => ({
-  "Order Number": order.id,
-  Customer: customerName(order.customerId),
-  Product: order.product,
-  Quantity: order.quantity,
-  Material: materialName(order.materialId),
-  "Assigned Equipment": machineName(order.equipmentId),
-  "Order Date": order.orderDate,
-  "Due Date": order.dueDate,
-  "Production Status": order.status,
-}))
-
-const jobRows: DataRow[] = productionJobs.map((job) => {
-  const order = orders.find((item) => item.id === job.orderId)
-  return {
-    "Job ID": job.id,
-    Order: job.orderId,
-    Product: order?.product ?? "Unlinked job",
-    Equipment: machineName(job.equipmentId),
-    Material: materialName(job.materialId),
-    "Estimated Duration": `${job.duration}h`,
-    "Scheduled Start": job.start,
-    "Scheduled End": job.end,
-    Status: job.status,
-  }
-})
 
 const materialRows: DataRow[] = materials.map((material) => ({
   Material: material.name,
@@ -167,10 +113,6 @@ const customerRows: DataRow[] = customers.map((customer) => {
 })
 
 const tableRows: Partial<Record<PageKey, DataRow[]>> = {
-  rfqs: rfqRows,
-  quotations: quoteRows,
-  orders: orderRows,
-  production: jobRows,
   materials: materialRows,
   equipment: equipmentRows,
   customers: customerRows,
@@ -190,7 +132,6 @@ function getTableTabs(page: PageKey, rows: DataRow[]) {
   ]
   if (page === "quotations") return [all, byStatus("Draft"), group("awaiting", "Awaiting Approval", ["Pending Review", "Sent"]), byStatus("Accepted"), group("closed", "Closed", ["Rejected", "Expired"])]
   if (page === "orders") return [all, group("awaiting", "Awaiting Production", ["Confirmed", "Queued"]), byStatus("In Production"), byStatus("Quality Check"), group("completed", "Completed", ["Completed", "Delivered"]), byStatus("Cancelled")]
-  if (page === "production") return [all, byStatus("Queued"), byStatus("Running"), byStatus("Quality Check", "Quality Check"), byStatus("Delayed"), byStatus("Completed")]
   if (page === "materials") return [all, byStatus("Low stock"), byStatus("In stock")]
   if (page === "equipment") return [all, byStatus("Available"), byStatus("Scheduled"), byStatus("Maintenance"), byStatus("Offline")]
   if (page === "customers") return [
@@ -202,7 +143,7 @@ function getTableTabs(page: PageKey, rows: DataRow[]) {
   return [all, ...[...new Set(rows.map((row) => String(row[statusKey] ?? "")))].filter(Boolean).map((value) => byStatus(value))]
 }
 
-const metrics: Record<PageKey, { label: string; value: string; note?: string }[]> = {
+const metrics: Partial<Record<PageKey, { label: string; value: string; note?: string }[]>> = {
   dashboard: [
     { label: "Pending RFQs", value: `${rfqs.filter((item) => ["Received", "Analyzing", "Needs Review"].includes(item.feasibility)).length}`, note: "2 need technical review" },
     { label: "Pending Quotations", value: "2", note: "1 awaiting customer approval" },
@@ -226,12 +167,6 @@ const metrics: Record<PageKey, { label: string; value: string; note?: string }[]
     { label: "In Production", value: `${orders.filter((order) => order.status === "In Production").length}` },
     { label: "Awaiting Production", value: `${orders.filter((order) => order.status === "Queued" || order.status === "Confirmed").length}` },
     { label: "Completed Orders", value: `${orders.filter((order) => order.status === "Completed" || order.status === "Delivered").length}` },
-  ],
-  production: [
-    { label: "Scheduled Jobs", value: `${productionJobs.length}` },
-    { label: "Running Jobs", value: `${productionJobs.filter((job) => job.status === "Running").length}` },
-    { label: "Scheduled Available Capacity", value: `${equipment.reduce((total, machine) => total + machine.workingHours - machine.scheduledHours, 0)}h` },
-    { label: "Delayed Jobs", value: `${productionJobs.filter((job) => job.status === "Delayed").length}` },
   ],
   materials: [
     { label: "Total Materials", value: `${materials.length}` },
@@ -281,7 +216,7 @@ function StatusBadge({ value }: { value: string }) {
 function Metrics({ page }: { page: PageKey }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {metrics[page].map((metric) => (
+      {metrics[page]?.map((metric) => (
         <Card key={metric.label} size="sm" className="min-w-0">
           <CardHeader className="pb-1">
             <CardDescription>{metric.label}</CardDescription>
@@ -366,41 +301,6 @@ function CapacityChart() {
   )
 }
 
-function Overview() {
-  return (
-    <>
-      <CapacityChart />
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(18rem,1fr)]">
-        <Card className="min-w-0">
-          <CardHeader><CardTitle>Orders Requiring Attention</CardTitle><CardDescription>Deadlines and current production status</CardDescription></CardHeader>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader><TableRow>{["Order ID", "Customer", "Product", "Assigned Machine", "Due Date", "Status", "Priority"].map((title) => <TableHead key={title}>{title}</TableHead>)}</TableRow></TableHeader>
-              <TableBody>{orders.slice(0, 4).map((order) => <TableRow key={order.id}>
-                <TableCell>{order.id}</TableCell><TableCell>{customerName(order.customerId)}</TableCell><TableCell className="max-w-48 truncate">{order.product}</TableCell><TableCell>{machineName(order.equipmentId)}</TableCell><TableCell>{order.dueDate}</TableCell><TableCell><StatusBadge value={order.status} /></TableCell><TableCell><StatusBadge value={order.priority} /></TableCell>
-              </TableRow>)}</TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle>Operational Insights</CardTitle><CardDescription>Static sample recommendations</CardDescription></CardHeader>
-          <CardContent className="gap-4">
-            {insights.map((insight) => <div key={insight.kind} className="flex gap-3"><span className="mt-0.5 text-muted-foreground">{insight.kind === "Capacity" ? <GaugeIcon className="size-4" /> : insight.kind === "Materials" ? <BoxesIcon className="size-4" /> : insight.kind === "Quotations" ? <FileTextIcon className="size-4" /> : <CalendarClockIcon className="size-4" />}</span><div className="min-w-0"><p className="text-sm font-medium">{insight.title}</p><p className="text-xs text-muted-foreground">{insight.detail}</p></div></div>)}
-          </CardContent>
-        </Card>
-      </div>
-    </>
-  )
-}
-
-function ProductionViews({ onSelect }: { onSelect: (row: DataRow) => void }) {
-  return <div className="space-y-3"><Card><CardHeader className="pb-2"><CardTitle className="text-base">Capacity recommendation</CardTitle><CardDescription>Inferred from scheduled jobs and standard working hours · demo only</CardDescription></CardHeader><CardContent><p className="text-sm">Printer B has 5 scheduled available production hours today and supports PETG.</p></CardContent></Card><Tabs defaultValue="queue" className="gap-3">
-    <TabsList><TabsTrigger value="queue">Production Queue</TabsTrigger><TabsTrigger value="schedule">Equipment Schedule</TabsTrigger></TabsList>
-    <TabsContent value="queue"><RecordsTable page="production" rows={jobRows} onSelect={onSelect} /></TabsContent>
-    <TabsContent value="schedule"><div className="grid gap-3 lg:grid-cols-2">{equipment.map((machine) => <Card key={machine.id}><CardHeader className="pb-2"><div className="flex items-start justify-between gap-2"><div><CardTitle>{machine.name}</CardTitle><CardDescription>{machine.manufacturer} {machine.model} · {machine.technology}</CardDescription></div><StatusBadge value={machine.status} /></div></CardHeader><CardContent><div className="mb-2 flex justify-between text-xs text-muted-foreground"><span>{machine.scheduledHours}h scheduled</span><span>{machine.workingHours - machine.scheduledHours}h available</span></div><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, machine.scheduledHours / machine.workingHours * 100)}%` }} /></div><p className="mt-3 text-xs text-muted-foreground">Compatible materials: {machine.materials.join(", ")}</p></CardContent></Card>)}</div></TabsContent>
-  </Tabs></div>
-}
-
 function Analytics() {
   return <div className="grid gap-3 xl:grid-cols-2"><CapacityChart />
     <Card><CardHeader><CardTitle>Quotation Status Distribution</CardTitle><CardDescription>Six sample quotations</CardDescription></CardHeader><CardContent className="space-y-3">{["Draft", "Pending Review", "Sent", "Accepted", "Rejected", "Expired"].map((status) => { const amount = quotations.filter((quote) => quote.status === status).length; return <div key={status} className="grid grid-cols-[7rem_1fr_2rem] items-center gap-3 text-sm"><span>{status}</span><div className="h-2 rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${amount / quotations.length * 100}%` }} /></div><span className="text-right tabular-nums text-muted-foreground">{amount}</span></div> })}</CardContent></Card>
@@ -427,17 +327,6 @@ function EquipmentViews({ onSelect }: { onSelect: (row: DataRow) => void }) {
     </Card>)}</div></TabsContent>
   </Tabs></TabsContent>
   </Tabs>
-}
-
-function SettingsPage() {
-  const [saved, setSaved] = useState(false)
-  return <div className="grid gap-3 xl:grid-cols-2">{[
-    { title: "General", icon: Settings2Icon, fields: [["Workspace Name", "OI Manufacturing"], ["Company Name", "OI Manufacture Indonesia"], ["Currency", "IDR · Indonesian Rupiah"], ["Timezone", "Asia/Jakarta"]] },
-    { title: "Manufacturing Defaults", icon: ActivityIcon, fields: [["Default Process", "FDM 3D Printing"], ["Default Material", "PLA"], ["Standard Working Hours", "08:00–17:00"], ["Default Lead Time", "7 business days"]] },
-    { title: "Pricing Configuration", icon: ArrowUpRightIcon, fields: [["Default Margin", "30%"], ["Labor Hourly Rate", "Rp 45.000"], ["Overhead Percentage", "12%"], ["Minimum Order Value", "Rp 150.000"]] },
-    { title: "Quotation Preferences", icon: FileTextIcon, fields: [["Quotation Validity", "14 days"], ["Quotation Prefix", "QT-{YYYY}-"], ["Default Terms", "50% deposit · balance before delivery"], ["Currency Display", "IDR"]] },
-    { title: "Equipment Scheduling Defaults", icon: GaugeIcon, fields: [["Working Days", "Monday–Saturday"], ["Daily Working Hours", "08:00–18:00"], ["Scheduling Buffer", "10%"]] },
-  ].map(({ title, icon: Icon, fields }) => <Card key={title}><CardHeader><CardTitle className="flex items-center gap-2"><Icon className="size-4 text-muted-foreground" />{title}</CardTitle><CardDescription>Local demo configuration</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2">{fields.map(([label, value]) => <div key={label} className="grid gap-1.5"><Label htmlFor={label}>{label}</Label><Input id={label} defaultValue={value} onChange={() => setSaved(false)} className="h-8" /></div>)}</CardContent></Card>)}<div className="flex items-center gap-3"><Button type="button" onClick={() => setSaved(true)}>Save local changes</Button><span className="text-xs text-muted-foreground">{saved ? "Changes held in this page session only." : "Nothing is sent to a backend."}</span></div></div>
 }
 
 function DetailSheet({ row, onClose }: { row: DataRow | null; onClose: () => void }) {
@@ -522,24 +411,21 @@ function DetailSheet({ row, onClose }: { row: DataRow | null; onClose: () => voi
 }
 
 export function WorkspacePage({ page }: { page: PageKey }) {
+  if (page === "dashboard" || page === "requests") return <ManufacturerAccess><LiveWorkspace key={page} page={page} /></ManufacturerAccess>
+  if (page === "settings") return <ManufacturerAccess><section className="mx-auto w-full max-w-4xl px-4 pb-6"><PricingSettings /></section></ManufacturerAccess>
+  return <DemoWorkspacePage page={page} />
+}
+
+function DemoWorkspacePage({ page }: { page: PageKey }) {
   const [selected, setSelected] = useState<DataRow | null>(null)
   const info = pageInfo[page]
   const rows = tableRows[page] ?? []
   return <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 pb-6 md:px-6">
-    <div className="flex flex-wrap items-start justify-between gap-3 pt-1"><div><h1 className="text-xl font-semibold tracking-tight">{info.title}</h1><p className="mt-1 text-sm text-muted-foreground">{info.description}</p></div>{page === "analytics" ? <Badge variant="outline">Demo Data · Oct 2026</Badge> : null}{page === "rfqs" ? <Button type="button" variant="outline" size="sm" disabled title="File uploads are not part of this demo">New RFQ · demo only</Button> : null}</div>
-    {!tableRows[page] && page !== "settings" ? <Metrics page={page} /> : null}
-    {page === "dashboard" ? <Overview /> : null}
-    {page === "production" ? <ProductionViews onSelect={setSelected} /> : null}
+    <div><h1 className="text-xl font-semibold">{info.title}</h1><p className="mt-1 text-sm text-muted-foreground">{info.description}</p><Badge variant="outline" className="mt-2">Demo data · not connected to customer requests</Badge></div>
+    <Metrics page={page} />
     {page === "analytics" ? <Analytics /> : null}
-    {page === "settings" ? <SettingsPage /> : null}
     {page === "equipment" ? <EquipmentViews onSelect={setSelected} /> : null}
-    {rows.length && page !== "equipment" && page !== "production" ? <RecordsTable page={page} rows={rows} onSelect={setSelected} /> : null}
-    {page === "rfqs" ? <Card><CardHeader><CardTitle>Feasibility review guide</CardTitle><CardDescription>Values below are sample estimates, not CAD analysis results.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-3"><div><p className="text-sm font-medium">Geometry</p><p className="text-xs text-muted-foreground">Bounding box, approximate model volume, and complexity appear in each RFQ detail.</p></div><div><p className="text-sm font-medium">Process suggestion</p><p className="text-xs text-muted-foreground">FDM is the initial assumed process for compatible filament requests.</p></div><div><p className="text-sm font-medium">Technical review</p><p className="text-xs text-muted-foreground">Confirm tolerances, orientation, and functional requirements before quoting.</p></div></CardContent></Card> : null}
-    {page === "quotations" ? <Card><CardHeader><CardTitle>Quotation detail preview</CardTitle><CardDescription>Sample recommendation: PETG can be a tougher alternative to PLA when the part needs more impact resistance.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Material</p><p className="text-sm font-medium">{money(518400)}</p></div><div><p className="text-xs text-muted-foreground">Machine + labor</p><p className="text-sm font-medium">{money(770400)}</p></div><div><p className="text-xs text-muted-foreground">Cost + 32% margin</p><p className="text-sm font-medium">{money(quotationPrice(quotations[0]!))}</p></div><Button variant="outline" size="sm" disabled title="No PDF generator is connected">Download PDF · demo only</Button></CardContent></Card> : null}
-    {page === "materials" ? <Card><CardHeader><CardTitle>Material recommendation</CardTitle><CardDescription>Contextual sample suggestion, not an engineering certification.</CardDescription></CardHeader><CardContent><p className="text-sm">PETG may be a suitable alternative to PLA for applications requiring greater toughness. Confirm operating conditions and part requirements before selecting a material.</p></CardContent></Card> : null}
-    {page === "equipment" ? <Card><CardHeader><CardTitle>Capacity note</CardTitle><CardDescription>Availability is inferred from sample scheduled jobs and working hours, not live telemetry.</CardDescription></CardHeader><CardContent><p className="text-sm">Printer C has 7 scheduled available production hours today and supports PLA, PETG, ABS, and ASA.</p></CardContent></Card> : null}
-    {page === "customers" ? <Card><CardHeader><CardTitle>Customer activity</CardTitle><CardDescription>History is linked to the shared RFQ, quotation, and order sample records.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-3"><p className="text-sm">3 returning customer accounts</p><p className="text-sm">Most active: AeroMotion Indonesia</p><p className="text-sm">Latest demo activity: {demoDate}</p></CardContent></Card> : null}
-    {page === "orders" ? <Card><CardHeader><CardTitle>Order progress</CardTitle><CardDescription>Production progress is a fixed sample estimate.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-3">{orders.slice(0, 3).map((order) => <div key={order.id} className="rounded-lg border p-3"><div className="mb-2 flex justify-between text-sm"><span>{order.id}</span><span>{order.progress}%</span></div><div className="h-1.5 rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${order.progress}%` }} /></div><p className="mt-2 text-xs text-muted-foreground">{order.status} · due {order.dueDate}</p></div>)}</CardContent></Card> : null}
+    {rows.length > 0 && page !== "equipment" ? <RecordsTable page={page} rows={rows} onSelect={setSelected} /> : null}
     <DetailSheet row={selected} onClose={() => setSelected(null)} />
   </main>
 }

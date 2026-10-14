@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation"
+import Link from "next/link"
 
 export default function LegacyDashboardPage() {
-  redirect("/-/overview")
+  return <main className="p-6 text-sm">Open <Link className="underline" href="/-/overview">the manufacturing overview</Link>.</main>
 }

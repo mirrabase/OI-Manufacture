@@ -3,14 +3,11 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
-  ActivityIcon,
   BoxesIcon,
   ChartNoAxesCombinedIcon,
   ClipboardListIcon,
-  FileTextIcon,
   GaugeIcon,
   LayoutDashboardIcon,
-  PackageIcon,
   Settings2Icon,
   UsersIcon,
 } from "lucide-react"
@@ -30,15 +27,12 @@ const groups = [
     label: "Workspace",
     items: [
       { title: "Overview", url: "/-/overview", icon: LayoutDashboardIcon },
-      { title: "RFQ Inbox", url: "/-/rfqs", icon: ClipboardListIcon },
-      { title: "Quotations", url: "/-/quotations", icon: FileTextIcon },
-      { title: "Orders", url: "/-/orders", icon: PackageIcon },
+      { title: "Requests", url: "/-/requests", icon: ClipboardListIcon },
     ],
   },
   {
     label: "Operations",
     items: [
-      { title: "Production", url: "/-/production", icon: ActivityIcon },
       { title: "Materials", url: "/-/materials", icon: BoxesIcon },
       { title: "Equipment", url: "/-/equipment", icon: GaugeIcon },
     ],

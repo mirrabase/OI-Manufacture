@@ -1,4 +1,4 @@
-import { notFound, redirect } from "next/navigation"
+import Link from "next/link"
 
 const sections = [
   "analytics",
@@ -13,12 +13,20 @@ const sections = [
   "settings",
 ]
 
+export function generateStaticParams() {
+  return sections.map((section) => ({ section }))
+}
+
 export default async function LegacyDashboardSection({
   params,
 }: {
   params: Promise<{ section: string }>
 }) {
   const { section } = await params
-  if (!sections.includes(section)) notFound()
-  redirect(`/-/${section === "dashboard" ? "overview" : section}`)
+  const destination = section === "dashboard" ? "/-/overview" : `/-/${section}`
+  return (
+    <main className="p-6 text-sm">
+      This workspace moved to <Link className="underline" href={destination}>{destination}</Link>.
+    </main>
+  )
 }

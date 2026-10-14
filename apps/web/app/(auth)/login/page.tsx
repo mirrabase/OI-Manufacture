@@ -11,7 +11,7 @@ export default function LoginPage() {
             <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <GalleryVerticalEndIcon className="size-4" />
             </div>
-            Acme Inc.
+            OI Manufacture
           </a>
         </div>
         <div className="flex flex-1 items-center justify-center">
@@ -20,13 +20,7 @@ export default function LoginPage() {
           </div>
         </div>
       </div>
-      <div className="relative hidden bg-muted lg:block">
-        <img
-          src="/placeholder.svg"
-          alt=""
-          className="absolute inset-0 h-full w-full object-cover dark:brightness-[0.2] dark:grayscale"
-        />
-      </div>
+      <div aria-hidden="true" className="relative hidden bg-muted lg:block" />
     </div>
   )
 }
