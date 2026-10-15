@@ -26,10 +26,10 @@ Use the Next.js URL printed in the terminal (currently `http://localhost:3001`).
 1. **Customer:** open `/portal/quotes/new`, upload an STL, choose mm or inches, then enter contact name, email, product, quantity, process, material, and optional notes. Submit and keep the page open until upload finishes. A guest session owns the request; keep using the same browser profile.
 2. **Automatic estimate:** FDM + PLA requests are sliced locally. The request detail shows estimated filament weight, print time, price, and a layer preview. The included `/assets/3DBenchy.stl` is a test model. Other materials/processes remain available for manual quotation and clearly show that automatic estimation is unsupported.
 3. **Manufacturer:** open `/login` and click **Sign in as local Manufacturer**. The seed creates `manufacturer@oi.local` / `local-manufacturer-123` and an active allowlist document. This is a local simulation account; its login control is absent in production. Manufacturer authentication uses a separate Firebase app, preserving the customer's guest session in another tab.
-4. Open **Requests** at `/-/requests`. The **Needs review** tab contains requests with a completed automatic estimate. Select **Review**, inspect requirements and sliced layers, download the STL, adjust the total if needed, then **Publish final quotation**. The request moves to **Awaiting payment** with status `Quoted / Unpaid`. The estimate and Manufacturer's final quotation are stored separately.
-5. Coordinate payment outside the portal. After funds are received, Manufacturer clicks **Confirm payment received · start production**. The request moves to **In production** with status `In Production / Paid`. The same request appears under the customer's `/portal/orders`.
+4. Open **Requests** at `/-/requests`. Review all submitted requests, including unsupported models that need manual review. Select **Review**, inspect requirements and sliced layers, download the STL, adjust the total if needed, then **Publish final quotation**. The request moves to **Awaiting payment** with status `Quoted / Unpaid`. The estimate and Manufacturer's final quotation are stored separately.
+5. Customer pays through **Pay with Kasera** after the final quotation is published. Kasera adds its transaction fee to the checkout total; the Manufacturer receives the quotation amount. The signed Kasera webhook confirms payment and moves the request to `/portal/orders` as `Preparing Production / Paid`. For an external transfer, Manufacturer can still confirm received funds from the request detail. Assign filament and a compatible machine, correct any stock or capacity blockers in **Materials**, **Purchasing**, or **Equipment**, then schedule the job to reserve stock. Customer requests are never blocked by inventory. Start production when the machine is ready and record actual filament use when completing the job.
 
-The Manufacturer **Requests** page is one live Firestore list with **All requests**, **Needs review**, **Awaiting payment**, and **In production** tabs. Requests without a completed automatic estimate stay out of that work queue. Overview also reads live customer request data. Materials, equipment, customers, and analytics remain demo modules.
+The Manufacturer **Requests** page is one live Firestore list with **All requests**, **Needs review**, **Awaiting payment**, **Preparing production**, **In production**, and **Completed** tabs. Overview and customer Orders update from Firestore. Materials, equipment, purchase orders, reservations, and usage are also stored in the local Firestore emulator. The customer directory, Analytics, and unrelated legacy dashboard modules remain demo data.
 
 ## Pricing and slicing settings
 
@@ -58,7 +58,20 @@ RUN_SLICER_INTEGRATION=1 pnpm test:slicing
 pnpm verify:local
 ```
 
-`verify:local` requires the emulators and checks customer ownership, immutable submitted STL, protected previews, pricing validation, Manufacturer permissions, quotation/payment transitions, and realtime customer request listeners. It creates and removes its own fixtures, and restores pricing.
+`verify:local` requires the emulators and checks customer ownership, immutable submitted STL, protected previews and production data, pricing validation, quotation/payment transitions, low-stock submissions, purchase receiving, reservations, equipment capacity, production completion, and realtime customer/Manufacturer request listeners. It creates and removes its own fixtures, and restores pricing.
+
+## Kasera Pay sandbox
+
+`pnpm dev` starts the Functions emulator alongside Auth, Firestore, and Storage. Before restarting it, create `functions/.secret.local` (ignored by Git) with a Kasera **Test mode** API key and webhook signing secret:
+
+```ini
+KASERA_API_KEY=kp_test_...
+KASERA_WEBHOOK_SECRET=...
+```
+
+In the Kasera dashboard, use **Test mode → Developer** to create the test API key and register a webhook for `payment.paid`, `payment.expired`, and `payment.failed`. The endpoint must be a public HTTPS URL pointing to the local Functions emulator at `/demo-oi-manufacture/us-central1/kaseraWebhook`; expose port `15001` with an HTTPS tunnel while testing. Enable QRIS and/or Virtual Account under **Settings → Payment methods**. Checkout links use Kasera hosted checkout; the portal never stores payment credentials.
+
+Local Firebase data stays in the emulator. Kasera test mode still uses Kasera's API and requires a temporary public HTTPS tunnel for webhook delivery. Live payments require a deployed HTTPS Functions endpoint, live keys, and Firebase billing; this project is not configured for live payments.
 
 With emulators running and the worker stopped, `pnpm verify:worker` checks interrupted job recovery, unsupported process, oversized model, invalid STL, preserved pricing, and clean shutdown. It also removes its own fixtures.
 
