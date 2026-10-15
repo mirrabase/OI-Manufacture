@@ -20,6 +20,14 @@ const controller = new AbortController()
 let stopping = false
 let unsubscribe
 let running = Promise.resolve()
+
+// shortcut: quote publishing is local-only with this slicing worker; add a trusted worker when hosted slicing is built.
+function needsAutomaticQuote(request) {
+  return request.status === 'Submitted' && request.paymentStatus === 'Unpaid'
+    && request.quoteTotal == null && request.estimate?.status === 'ready'
+    && Number.isSafeInteger(request.estimate.total) && request.estimate.total > 0
+}
+
 async function stop() {
   if (stopping) return
   stopping = true
@@ -39,10 +47,18 @@ async function processRequest(ref) {
     request = snapshot.data()
     if (!request || !['Submitted', 'Quoted'].includes(request.status) || request.paymentStatus === 'Paid') return false
     requestedAt = request.estimateRequestedAt || 0
-    if (request.estimate && request.estimate.status !== 'processing' && request.estimate.requestedAt === requestedAt) return false
+    if (request.estimate && request.estimate.status !== 'processing' && request.estimate.requestedAt === requestedAt) {
+      if (!needsAutomaticQuote(request)) return false
+      transaction.update(ref, { status: 'Quoted', quoteTotal: request.estimate.total, paymentStatus: 'Unpaid', quotedAt: request.estimate.calculatedAt || Date.now() })
+      return 'quoted'
+    }
     transaction.update(ref, { estimate: { status: 'processing', requestedAt } })
     return true
   })
+  if (claimed === 'quoted') {
+    console.log(`[slicer] ${ref.id}: automatic quotation published · Rp ${request.estimate.total}`)
+    return
+  }
   if (!claimed) return
   let directory
   let estimate
@@ -80,7 +96,14 @@ async function processRequest(ref) {
   // A quote or payment may have been saved while slicing; never overwrite those fields.
   await db.runTransaction(async (transaction) => {
     const current = (await transaction.get(ref)).data()
-    if (current && (current.estimateRequestedAt || 0) === requestedAt) transaction.update(ref, { estimate })
+    if (!current || (current.estimateRequestedAt || 0) !== requestedAt) return
+    const update = { estimate }
+    if (needsAutomaticQuote({ ...current, estimate })) {
+      update.status = 'Quoted'
+      update.quoteTotal = estimate.total
+      update.quotedAt = estimate.calculatedAt
+    }
+    transaction.update(ref, update)
   })
   console.log(`[slicer] ${ref.id}: ${estimate.status}${estimate.total ? ` · Rp ${estimate.total}` : ''}`)
 }
@@ -92,7 +115,7 @@ try {
     for (const change of snapshot.docChanges()) {
       if (change.type === 'removed' || pending.has(change.doc.id)) continue
       const data = change.doc.data()
-      if (data.estimate && data.estimate.status !== 'processing' && data.estimate.requestedAt === (data.estimateRequestedAt || 0)) continue
+      if (data.estimate && data.estimate.status !== 'processing' && data.estimate.requestedAt === (data.estimateRequestedAt || 0) && !needsAutomaticQuote(data)) continue
       pending.add(change.doc.id)
       running = running.then(async () => {
         if (!stopping) await processRequest(change.doc.ref)

@@ -12,7 +12,7 @@ export function EstimatePanel({ request, asManufacturer = false }: { request: Cu
   const [preview, setPreview] = useState(false)
   const estimate = request.estimate
   const waiting = !estimate || estimate.status === "processing" || (request.estimateRequestedAt ?? 0) > estimate.requestedAt
-  return <Card><CardHeader><CardTitle>Print estimate</CardTitle><CardDescription>Simulation estimate · final quotation follows Manufacturer review</CardDescription></CardHeader><CardContent className="grid gap-3">
+  return <Card><CardHeader><CardTitle>Print estimate</CardTitle><CardDescription>Supported requests become payable quotations automatically after slicing. The Manufacturer can adjust the price before checkout.</CardDescription></CardHeader><CardContent className="grid gap-3">
     {waiting ? <p role="status" className="text-sm text-muted-foreground">Calculating filament, print time, and price… Keep the local slicer worker running.</p>
       : estimate.status !== "ready" ? <p role="status" className="text-sm text-muted-foreground">{estimate.error || "Automatic estimate unavailable; Manufacturer review is required."}</p>
       : <>
