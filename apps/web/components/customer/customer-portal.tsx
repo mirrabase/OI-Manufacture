@@ -4,6 +4,7 @@ import Link from "next/link"
 import dynamic from "next/dynamic"
 import { useEffect, useMemo, useState } from "react"
 import { onAuthStateChanged, signInAnonymously, type User } from "firebase/auth"
+import { httpsCallable } from "firebase/functions"
 import { ArrowLeftIcon, ArrowRightIcon, FileUpIcon, PlusIcon, UploadCloudIcon } from "lucide-react"
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -11,7 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@work
 import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@workspace/ui/components/select"
-import { auth } from "@/lib/firebase/client"
+import { auth, functions } from "@/lib/firebase/client"
 import { downloadModel, listenToCustomerRequests, submitCustomerRequest } from "@/lib/firebase/customer-requests"
 import { formatIDR, type CustomerRFQ, type ManufacturingRequirements, type UploadedModelMetadata } from "@/lib/customer-portal"
 
@@ -59,13 +60,13 @@ function Heading({ eyebrow, title, detail, action }: { eyebrow?: string; title: 
 
 function HomePage({ user, requests, error }: { user: User; requests: RequestRecord[]; error: string }) {
   const quotes = requests.filter((request) => request.quoteTotal)
-  const orders = requests.filter((request) => request.status === "In Production")
+  const orders = requests.filter((request) => ["Preparing Production", "In Production"].includes(request.status))
   return <main className="mx-auto flex max-w-6xl flex-col gap-7 px-4 py-8 sm:px-6"><Heading eyebrow="Customer workspace" title={user.isAnonymous ? "Your customer workspace" : `Hello, ${user.displayName?.split(" ")[0] || "there"}`} detail="Track your manufacturing requests and active orders." action={<Button render={<Link href="/portal/quotes/new" />}><PlusIcon /> Upload 3D model</Button>} />
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     <div className="grid gap-3 sm:grid-cols-3"><Metric label="Open requests" value={String(requests.filter((r) => r.status !== "Closed").length)} /><Metric label="Quotations" value={String(quotes.length)} /><Metric label="Active orders" value={String(orders.length)} /></div>
     <Card><CardHeader><CardTitle>Recent requests</CardTitle><CardDescription>Live updates from your RFQ inbox</CardDescription></CardHeader><CardContent className="grid gap-3">{requests.length ? requests.slice(0, 3).map((rfq) => <RequestRow key={rfq.id} request={rfq} />) : <Empty title="No requests yet" detail="Upload a 3D model to start a manufacturing request." action="Upload model" href="/portal/quotes/new" />}</CardContent></Card>
     <Card><CardHeader><CardTitle>Recent quotations</CardTitle></CardHeader><CardContent className="grid gap-3">{quotes.length ? quotes.slice(0, 3).map((request) => <RequestRow key={request.id} request={request} />) : <p className="text-sm text-muted-foreground">Final quotations will appear after Manufacturer review.</p>}</CardContent></Card>
-    <Card><CardHeader><CardTitle>Active orders</CardTitle></CardHeader><CardContent className="grid gap-3">{orders.length ? orders.slice(0, 3).map((request) => <Link key={request.id} href={`/portal/orders/detail?id=${encodeURIComponent(request.id)}`} className="rounded-lg border p-3 text-sm">{request.product} · In Production · Paid</Link>) : <p className="text-sm text-muted-foreground">Orders appear after the Manufacturer confirms payment.</p>}<Button render={<Link href="/portal/orders" />} variant="outline">View orders</Button></CardContent></Card>
+    <Card><CardHeader><CardTitle>Active orders</CardTitle></CardHeader><CardContent className="grid gap-3">{orders.length ? orders.slice(0, 3).map((request) => <Link key={request.id} href={`/portal/orders/detail?id=${encodeURIComponent(request.id)}`} className="rounded-lg border p-3 text-sm">{request.product} · {request.status} · Paid</Link>) : <p className="text-sm text-muted-foreground">Orders appear after the Manufacturer confirms payment.</p>}<Button render={<Link href="/portal/orders" />} variant="outline">View orders</Button></CardContent></Card>
   </main>
 }
 
@@ -81,16 +82,40 @@ function QuotesPage({ requests, error }: { requests: RequestRecord[]; error: str
 }
 
 function OrdersPage({ requests }: { requests: RequestRecord[] }) {
-  const orders = requests.filter((request) => request.status === "In Production")
-  return <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6"><Heading eyebrow="Workspace" title="Orders" detail="Paid requests move here when manufacturing starts." />{orders.length ? <div className="grid gap-3">{orders.map((request) => <Link key={request.id} href={`/portal/orders/detail?id=${encodeURIComponent(request.id)}`} className="rounded-xl border bg-card p-4 hover:bg-muted/30"><p className="text-sm font-semibold">{request.product}</p><p className="mt-1 text-xs text-muted-foreground">{request.id} · {request.requirements.quantity} units · {formatIDR(request.quoteTotal ?? 0)}</p><Badge className="mt-2" variant="outline">In Production · Paid</Badge></Link>)}</div> : <Empty title="No active orders" detail="Your request will appear here after payment is confirmed." />}</main>
+  const orders = requests.filter((request) => ["Preparing Production", "In Production", "Completed"].includes(request.status))
+  return <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6"><Heading eyebrow="Workspace" title="Orders" detail="Paid requests move here while production is being prepared and completed." />{orders.length ? <div className="grid gap-3">{orders.map((request) => <Link key={request.id} href={`/portal/orders/detail?id=${encodeURIComponent(request.id)}`} className="rounded-xl border bg-card p-4 hover:bg-muted/30"><p className="text-sm font-semibold">{request.product}</p><p className="mt-1 text-xs text-muted-foreground">{request.id} · {request.requirements.quantity} units · {formatIDR(request.quoteTotal ?? 0)}</p><Badge className="mt-2" variant="outline">{request.status} · Paid</Badge></Link>)}</div> : <Empty title="No active orders" detail="Your request will appear here after payment is confirmed." />}</main>
 }
 
 function QuoteDetail({ requests, error }: { requests: RequestRecord[]; error: string }) {
   const [id, setId] = useState("")
   const [fileError, setFileError] = useState("")
   const [downloading, setDownloading] = useState(false)
-  useEffect(() => setId(new URLSearchParams(window.location.search).get("id") || ""), [])
+  const [paymentBusy, setPaymentBusy] = useState(false)
+  const [paymentError, setPaymentError] = useState("")
+  const [returnedFromPayment, setReturnedFromPayment] = useState(false)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    setId(params.get("rfqId") || params.get("id") || "")
+    setReturnedFromPayment(params.get("payment") === "return")
+  }, [])
   const rfq = requests.find((request) => request.id === id)
+  async function payWithKasera() {
+    if (!rfq) return
+    setPaymentBusy(true)
+    setPaymentError("")
+    try {
+      const returnUrl = new URL(window.location.href)
+      returnUrl.searchParams.delete("payment")
+      returnUrl.searchParams.set("rfqId", rfq.id)
+      returnUrl.searchParams.delete("id")
+      const createCheckout = httpsCallable<{ rfqId: string; returnUrl: string }, { checkoutUrl: string }>(functions, "createKaseraCheckout")
+      const result = await createCheckout({ rfqId: rfq.id, returnUrl: returnUrl.toString() })
+      window.location.assign(result.data.checkoutUrl)
+    } catch (cause) {
+      setPaymentError(cause instanceof Error ? cause.message : "Kasera checkout could not be opened.")
+      setPaymentBusy(false)
+    }
+  }
   return <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8 sm:px-6">
     <Link href="/portal/quotes" className="inline-flex items-center gap-2 text-sm text-muted-foreground"><ArrowLeftIcon className="size-4" /> Quotations</Link>
     {error && !rfq ? <p role="alert" className="text-sm text-destructive">Could not load your requests: {error}</p> : null}
@@ -98,8 +123,22 @@ function QuoteDetail({ requests, error }: { requests: RequestRecord[]; error: st
       <Heading eyebrow={rfq.id} title={rfq.product} detail={`Submitted ${new Date(rfq.submittedAt ?? rfq.createdAt).toLocaleDateString("en-GB")}`} />
       <Card><CardHeader><CardTitle>Request details</CardTitle><CardDescription>Manufacturing requirements and uploaded file</CardDescription></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2">
         <Detail label="Status" value={rfq.status} /><Detail label="Quantity" value={`${rfq.requirements.quantity} units`} /><Detail label="Material" value={rfq.requirements.material} /><Detail label="Process" value={rfq.requirements.process} /><Detail label="File" value={`${rfq.model.name} · ${formatSize(rfq.model.size)}`} /><Detail label="Bounding box" value={`${rfq.model.boundingBoxMm.map((x) => x.toFixed(1)).join(" × ")} mm`} />
-        {rfq.quoteTotal ? <><Detail label="Quotation total" value={formatIDR(rfq.quoteTotal)} /><Detail label="Payment" value={rfq.paymentStatus ?? "Unpaid"} />{rfq.paymentStatus !== "Paid" ? <p className="sm:col-span-2 rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground">Please contact the Manufacturer to arrange payment. Your request will move into production after they confirm receipt.</p> : null}</> : <><Detail label="Quotation" value="Menunggu quotation" /><Detail label="Payment" value="Belum ada pembayaran" /><p className="sm:col-span-2 rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground">The Manufacturer will review the STL and send a price. No payment is due yet.</p></>}
-        {rfq.paymentStatus === "Paid" ? <p className="sm:col-span-2 rounded-lg bg-muted/50 p-3 text-sm">Payment confirmed · this request is in production.</p> : null}
+        {rfq.quoteTotal ? <>
+          <Detail label="Quotation total" value={formatIDR(rfq.quoteTotal)} />
+          <Detail label="Payment" value={rfq.paymentStatus ?? "Unpaid"} />
+          {rfq.paymentStatus !== "Paid" ? <div className="sm:col-span-2 grid gap-3 rounded-lg bg-muted/50 p-3">
+            <p className="text-sm text-muted-foreground">Pay securely with Kasera. Kasera adds its processing fee to the checkout total; review the final amount before paying. This page updates after Kasera confirms the payment.</p>
+            {returnedFromPayment ? <p role="status" className="text-sm">Waiting for Kasera payment confirmation. This page will update automatically.</p> : null}
+            {!rfq.paymentReviewRequired ? <Button type="button" disabled={paymentBusy} onClick={() => void payWithKasera()}>{paymentBusy ? "Opening Kasera…" : "Pay with Kasera"}</Button> : null}
+            {paymentError ? <p role="alert" className="text-sm text-destructive">{paymentError}</p> : null}
+          </div> : null}
+        </> : <>
+          <Detail label="Quotation" value="Menunggu quotation" />
+          <Detail label="Payment" value="Belum ada pembayaran" />
+          <p className="sm:col-span-2 rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground">The Manufacturer will review the STL and send a price. No payment is due yet.</p>
+        </>}
+        {rfq.paymentReviewRequired ? <p role="alert" className="sm:col-span-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{rfq.paymentReviewReason || "Your payment needs Manufacturer review. Please contact the Manufacturer."}</p> : null}
+        {rfq.paymentStatus === "Paid" ? <p className="sm:col-span-2 rounded-lg bg-muted/50 p-3 text-sm">Payment confirmed · production is being prepared.</p> : null}
         {rfq.requirements.notes ? <Detail label="Notes" value={rfq.requirements.notes} /> : null}
         <div className="sm:col-span-2"><Button type="button" variant="outline" disabled={downloading} onClick={async () => { setDownloading(true); setFileError(""); try { await downloadModel(rfq.model.storagePath, rfq.model.name) } catch { setFileError("Could not access the uploaded model.") } finally { setDownloading(false) } }}>{downloading ? "Preparing file…" : "Download your STL"}</Button>{fileError ? <p role="alert" className="mt-2 text-xs text-destructive">{fileError}</p> : null}</div>
       </CardContent></Card>
@@ -111,8 +150,8 @@ function Detail({ label, value }: { label: string; value: string }) { return <di
 function OrderDetail({ requests }: { requests: RequestRecord[] }) {
   const [id, setId] = useState("")
   useEffect(() => setId(new URLSearchParams(window.location.search).get("id") || ""), [])
-  const request = requests.find((item) => item.id === id && item.status === "In Production")
-  return <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8 sm:px-6"><Link href="/portal/orders" className="text-sm text-muted-foreground">← Orders</Link>{request ? <><Heading eyebrow={request.id} title={request.product} detail={`${request.requirements.quantity} units · ${formatIDR(request.quoteTotal ?? 0)}`} /><Card><CardHeader><CardTitle>Production status</CardTitle><CardDescription>Payment is confirmed. The Manufacturer can now start the job.</CardDescription></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2"><Detail label="Status" value={request.status} /><Detail label="Payment" value="Paid" /><Detail label="STL model" value={request.model.name} /><Detail label="Material" value={request.requirements.material} /><Detail label="Process" value={request.requirements.process} /></CardContent></Card></> : <Empty title="Order not found" detail="Orders appear after the Manufacturer confirms payment." />}</main>
+  const request = requests.find((item) => item.id === id && ["Preparing Production", "In Production", "Completed"].includes(item.status))
+  return <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8 sm:px-6"><Link href="/portal/orders" className="text-sm text-muted-foreground">← Orders</Link>{request ? <><Heading eyebrow={request.id} title={request.product} detail={`${request.requirements.quantity} units · ${formatIDR(request.quoteTotal ?? 0)}`} /><Card><CardHeader><CardTitle>Production status</CardTitle><CardDescription>Payment is confirmed. Your order is being handled by the Manufacturer.</CardDescription></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2"><Detail label="Status" value={request.status} /><Detail label="Payment" value="Paid" /><Detail label="STL model" value={request.model.name} /><Detail label="Material" value={request.requirements.material} /><Detail label="Process" value={request.requirements.process} /></CardContent></Card></> : <Empty title="Order not found" detail="Orders appear after the Manufacturer confirms payment." />}</main>
 }
 
 function QuoteWizard({ user }: { user: User }) {

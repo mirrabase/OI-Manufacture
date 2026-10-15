@@ -14,6 +14,7 @@
     "slicing": "node scripts/slicing-worker.mjs",
     "test:slicing": "node --test scripts/slicing.test.mjs",
     "verify:local": "node scripts/verify-local.mjs",
+    "test:payments": "pnpm --filter functions test",
     "verify:worker": "node scripts/verify-worker.mjs"
   },
   "devDependencies": {
