@@ -3,6 +3,7 @@ import { getAuth } from 'firebase-admin/auth'
 import { getFirestore } from 'firebase-admin/firestore'
 import { getStorage } from 'firebase-admin/storage'
 import { defaultPricing } from '../apps/web/lib/pricing.ts'
+import { equipment, materials } from '../apps/web/lib/mock/manufacturer.ts'
 
 export const projectId = 'demo-oi-manufacture'
 process.env.METADATA_SERVER_DETECTION = 'none'
@@ -37,7 +38,29 @@ export async function seedLocalData() {
   if (!(await allowlist.get()).exists) await allowlist.create({ active: true })
   const pricing = db.doc('pricing/default')
   if (!(await pricing.get()).exists) await pricing.create(defaultPricing)
-  console.log('[local] Manufacturer and example PLA pricing ready. Firebase: localhost only.')
+  for (const material of materials) {
+    const ref = db.doc(`materials/${material.id}`)
+    if (!(await ref.get()).exists) {
+      const data = { ...material }
+      delete data.id
+      delete data.compatibleEquipment
+      await ref.create(data)
+    }
+  }
+  for (const machine of equipment) {
+    const ref = db.doc(`equipment/${machine.id}`)
+    const existing = await ref.get()
+    const compatibleMaterialIds = materials.filter((material) => material.compatibleEquipment.includes(machine.id)).map((material) => material.id)
+    if (!existing.exists) {
+      const { id, buildVolume, materials: _materials, ...data } = machine
+      const dimensions = [...buildVolume.matchAll(/[\d.]+/g)].map(([value]) => Number(value)).slice(0, 3)
+      if (dimensions.length !== 3 || dimensions.some((value) => !Number.isFinite(value) || value <= 0)) throw new Error(`Invalid build volume for ${id}.`)
+      await ref.create({ ...data, buildVolumeMm: dimensions, compatibleMaterialIds })
+    } else if (!existing.data().updatedAt && JSON.stringify(existing.data().compatibleMaterialIds) !== JSON.stringify(compatibleMaterialIds)) {
+      await ref.update({ compatibleMaterialIds })
+    }
+  }
+  console.log('[local] Manufacturer, pricing, materials, and equipment ready. Firebase: localhost only.')
 }
 
 if (process.argv[1]?.endsWith('/local-firebase.mjs')) await seedLocalData()

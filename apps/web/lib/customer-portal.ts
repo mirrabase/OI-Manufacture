@@ -40,13 +40,19 @@ export type CustomerRFQ = {
   product: string
   requirements: ManufacturingRequirements
   model: UploadedModelMetadata
-  status: "Draft" | "Submitted" | "Under Review" | "Quoted" | "In Production" | "Closed"
+  status: "Draft" | "Submitted" | "Under Review" | "Quoted" | "Preparing Production" | "In Production" | "Completed" | "Closed"
   quoteTotal?: number
   paymentStatus?: "Unpaid" | "Paid"
+  activeKaseraPaymentAttemptId?: string
+  kaseraPaymentRequestId?: string
+  paymentReviewRequired?: boolean
+  paymentReviewReason?: string
   createdAt: number
   submittedAt?: number
   quotedAt?: number
   paidAt?: number
+  productionStartedAt?: number
+  completedAt?: number
   estimate?: PrintEstimate
   estimateRequestedAt?: number
 }

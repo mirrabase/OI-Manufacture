@@ -6,6 +6,47 @@ service cloud.firestore {
       return signedIn() && exists(/databases/$(database)/documents/manufacturers/$(request.auth.uid))
         && get(/databases/$(database)/documents/manufacturers/$(request.auth.uid)).data.active == true;
     }
+    function validRate(value) { return value is int && value >= 0 && value <= 10000000; }
+    function validMaterial(data) {
+      return data.keys().hasAll(['name', 'category', 'manufacturer', 'unitCost', 'stock', 'reserved', 'reorderAt', 'properties'])
+        && data.keys().hasOnly(['name', 'category', 'manufacturer', 'unitCost', 'stock', 'reserved', 'reorderAt', 'properties', 'updatedAt'])
+        && data.name is string && data.name.size() > 0
+        && data.category is string && data.manufacturer is string && data.properties is string
+        && validRate(data.unitCost)
+        && data.stock is number && data.stock >= 0 && data.stock <= 100000
+        && data.reserved is number && data.reserved >= 0 && data.reserved <= data.stock
+        && data.reorderAt is number && data.reorderAt >= 0 && data.reorderAt <= 100000
+        && (!('updatedAt' in data) || data.updatedAt is int);
+    }
+    function validEquipment(data) {
+      return data.keys().hasAll(['name', 'manufacturer', 'model', 'technology', 'buildVolumeMm', 'compatibleMaterialIds', 'hourlyCost', 'workingHours', 'scheduledHours', 'status'])
+        && data.keys().hasOnly(['name', 'manufacturer', 'model', 'technology', 'buildVolumeMm', 'compatibleMaterialIds', 'hourlyCost', 'workingHours', 'scheduledHours', 'status', 'activeProductionOrderId', 'updatedAt'])
+        && data.name is string && data.name.size() > 0
+        && data.manufacturer is string && data.model is string && data.technology is string
+        && data.buildVolumeMm is list && data.buildVolumeMm.size() == 3
+        && data.buildVolumeMm[0] is number && data.buildVolumeMm[0] > 0 && data.buildVolumeMm[0] <= 2000
+        && data.buildVolumeMm[1] is number && data.buildVolumeMm[1] > 0 && data.buildVolumeMm[1] <= 2000
+        && data.buildVolumeMm[2] is number && data.buildVolumeMm[2] > 0 && data.buildVolumeMm[2] <= 2000
+        && data.compatibleMaterialIds is list
+        && validRate(data.hourlyCost)
+        && data.workingHours is number && data.workingHours > 0 && data.workingHours <= 24
+        && data.scheduledHours is number && data.scheduledHours >= 0 && data.scheduledHours <= 24
+        && data.status in ['Available', 'Scheduled', 'Maintenance', 'Offline']
+        && (!('activeProductionOrderId' in data) || data.activeProductionOrderId is string)
+        && (!('updatedAt' in data) || data.updatedAt is int);
+    }
+    function validProductionOrder(data, rfqId) {
+      return data.keys().hasAll(['rfqId', 'status', 'materialId', 'equipmentId', 'plannedGrams', 'plannedHours', 'reservedKg', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['rfqId', 'status', 'materialId', 'equipmentId', 'plannedGrams', 'plannedHours', 'reservedKg', 'actualGrams', 'createdAt', 'updatedAt'])
+        && data.rfqId == rfqId
+        && data.status in ['Preparing Production', 'Scheduled', 'In Production', 'Completed']
+        && data.materialId is string && data.equipmentId is string
+        && data.plannedGrams is number && data.plannedGrams >= 0 && data.plannedGrams <= 100000000
+        && data.plannedHours is number && data.plannedHours >= 0 && data.plannedHours <= 10000
+        && data.reservedKg is number && data.reservedKg >= 0 && data.reservedKg <= 100000
+        && data.createdAt is int && data.updatedAt is int
+        && (!('actualGrams' in data) || (data.actualGrams is number && data.actualGrams > 0 && data.actualGrams <= 100000000));
+    }
     match /manufacturers/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow write: if false;
@@ -23,7 +64,65 @@ service cloud.firestore {
         && request.resource.data.layerHeight is number && request.resource.data.layerHeight >= 0.08 && request.resource.data.layerHeight <= 0.32
         && request.resource.data.infillPercent is number && request.resource.data.infillPercent >= 0 && request.resource.data.infillPercent <= 100;
     }
-    function validRate(value) { return value is int && value >= 0 && value <= 10000000; }
+    match /materials/{materialId} {
+      allow read: if manufacturer();
+      allow create, update: if manufacturer() && validMaterial(request.resource.data);
+      allow delete: if false;
+    }
+    match /equipment/{equipmentId} {
+      allow read: if manufacturer();
+      allow create, update: if manufacturer() && validEquipment(request.resource.data);
+      allow delete: if false;
+    }
+    match /purchaseOrders/{purchaseOrderId} {
+      allow read: if manufacturer();
+      allow create: if manufacturer()
+        && request.resource.data.keys().hasAll(['supplier', 'materialId', 'quantity', 'eta', 'status', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['supplier', 'materialId', 'quantity', 'unitCost', 'eta', 'status', 'createdAt'])
+        && request.resource.data.supplier is string && request.resource.data.supplier.size() > 0
+        && request.resource.data.materialId is string
+        && request.resource.data.quantity is number && request.resource.data.quantity > 0 && request.resource.data.quantity <= 100000
+        && (!('unitCost' in request.resource.data) || validRate(request.resource.data.unitCost))
+        && request.resource.data.eta is string
+        && request.resource.data.status == 'Ordered'
+        && request.resource.data.createdAt is int;
+      allow update: if manufacturer()
+        && resource.data.status == 'Ordered'
+        && request.resource.data.status in ['Received', 'Cancelled']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'receivedAt', 'updatedAt'])
+        && (!('receivedAt' in request.resource.data) || request.resource.data.receivedAt is int)
+        && (!('updatedAt' in request.resource.data) || request.resource.data.updatedAt is int);
+      allow delete: if false;
+    }
+    match /inventoryMovements/{movementId} {
+      allow read: if manufacturer();
+      allow create: if manufacturer()
+        && request.resource.data.keys().hasAll(['type', 'materialId', 'deltaKg', 'reservedDeltaKg', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['type', 'materialId', 'deltaKg', 'reservedDeltaKg', 'referenceId', 'reason', 'createdAt'])
+        && request.resource.data.type in ['adjustment', 'purchaseReceipt', 'reservation', 'release', 'consumption']
+        && request.resource.data.materialId is string
+        && request.resource.data.deltaKg is number
+        && request.resource.data.reservedDeltaKg is number
+        && (!('referenceId' in request.resource.data) || request.resource.data.referenceId is string)
+        && (!('reason' in request.resource.data) || request.resource.data.reason is string)
+        && request.resource.data.createdAt is int;
+      allow update, delete: if false;
+    }
+    match /productionOrders/{rfqId} {
+      allow read: if manufacturer();
+      allow create: if manufacturer()
+        && validProductionOrder(request.resource.data, rfqId)
+        && getAfter(/databases/$(database)/documents/rfqs/$(rfqId)).data.status == 'Preparing Production'
+        && getAfter(/databases/$(database)/documents/rfqs/$(rfqId)).data.paymentStatus == 'Paid';
+      allow update: if manufacturer()
+        && validProductionOrder(request.resource.data, rfqId)
+        && resource.data.rfqId == rfqId
+        && get(/databases/$(database)/documents/rfqs/$(rfqId)).data.paymentStatus == 'Paid'
+        && ((resource.data.status == 'Preparing Production' && request.resource.data.status in ['Preparing Production', 'Scheduled'])
+          || (resource.data.status == 'Scheduled' && request.resource.data.status in ['Preparing Production', 'In Production'])
+          || (resource.data.status == 'In Production' && request.resource.data.status == 'Completed'));
+      allow delete: if false;
+    }
     match /rfqs/{rfqId} {
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
@@ -56,12 +155,13 @@ service cloud.firestore {
         && request.resource.data.model.boundingBoxMm is list
         && request.resource.data.model.boundingBoxMm.size() == 3
         && request.resource.data.model.storagePath.matches('rfqs/' + request.auth.uid + '/' + rfqId + '/.*');
-      allow read: if signedIn() && (resource == null || resource.data.ownerUid == request.auth.uid || (manufacturer() && resource.data.status in ['Submitted', 'Quoted', 'In Production']));
+      allow read: if signedIn() && (resource == null || resource.data.ownerUid == request.auth.uid || (manufacturer() && resource.data.status in ['Submitted', 'Quoted', 'Preparing Production', 'In Production', 'Completed']));
       allow update: if manufacturer() && resource.data.status == 'Submitted'
         && request.resource.data.status == 'Quoted'
         && request.resource.data.quoteTotal is int
         && request.resource.data.quoteTotal > 0
         && request.resource.data.paymentStatus == 'Unpaid'
+        && !('activeKaseraPaymentAttemptId' in resource.data)
         && request.resource.data.quotedAt is int
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'quoteTotal', 'paymentStatus', 'quotedAt'])
         || (manufacturer() && resource.data.status == 'Quoted'
@@ -69,16 +169,21 @@ service cloud.firestore {
           && request.resource.data.quoteTotal is int
           && request.resource.data.quoteTotal > 0
           && request.resource.data.paymentStatus == 'Unpaid'
+          && !('activeKaseraPaymentAttemptId' in resource.data)
           && request.resource.data.quotedAt is int
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quoteTotal', 'quotedAt']))
-        || (manufacturer() && resource.data.status == 'Quoted'
-          && resource.data.paymentStatus == 'Unpaid'
-          && resource.data.quoteTotal is int
-          && resource.data.quoteTotal > 0
+        || (manufacturer() && resource.data.status == 'Preparing Production'
+          && resource.data.paymentStatus == 'Paid'
           && request.resource.data.status == 'In Production'
-          && request.resource.data.paymentStatus == 'Paid'
-          && request.resource.data.paidAt is int
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paymentStatus', 'paidAt']))
+          && getAfter(/databases/$(database)/documents/productionOrders/$(rfqId)).data.status == 'In Production'
+          && request.resource.data.productionStartedAt is int
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'productionStartedAt']))
+        || (manufacturer() && resource.data.status == 'In Production'
+          && resource.data.paymentStatus == 'Paid'
+          && request.resource.data.status == 'Completed'
+          && getAfter(/databases/$(database)/documents/productionOrders/$(rfqId)).data.status == 'Completed'
+          && request.resource.data.completedAt is int
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'completedAt']))
         || (manufacturer() && resource.data.status in ['Submitted', 'Quoted']
           && resource.data.paymentStatus == 'Unpaid'
           && (!('estimate' in resource.data) || resource.data.estimate.status != 'processing')

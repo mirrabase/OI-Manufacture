@@ -75,7 +75,6 @@ export function GoogleLoginButton({ destination = "/-/overview" }: { destination
         </svg> : null}
         {isSigningIn ? "Signing in..." : useFirebaseEmulator ? "Sign in as local Manufacturer" : "Continue with Google"}
       </Button>
-      {useFirebaseEmulator ? <p className="text-center text-xs text-muted-foreground">Firebase Emulator · simulation account · no cloud access</p> : null}
       {error ? (
         <p role="alert" className="text-center text-sm text-destructive">
           {error}

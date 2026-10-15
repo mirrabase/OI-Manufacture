@@ -12,7 +12,7 @@ service firebase.storage {
         && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.ownerUid == uid;
     }
     match /rfqs/{uid}/{rfqId}/{fileName} {
-      allow read: if signedIn() && ((request.auth.uid == uid && requestOwner(uid, rfqId)) || (manufacturer() && requestOwner(uid, rfqId) && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.status in ['Submitted', 'Quoted', 'In Production']));
+      allow read: if signedIn() && ((request.auth.uid == uid && requestOwner(uid, rfqId)) || (manufacturer() && requestOwner(uid, rfqId) && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.status in ['Submitted', 'Quoted', 'Preparing Production', 'In Production', 'Completed']));
       allow write: if signedIn() && request.auth.uid == uid && requestOwner(uid, rfqId)
         && firestore.get(/databases/(default)/documents/rfqs/$(rfqId)).data.status == 'Draft'
         && fileName.matches('.*\\.[sS][tT][lL]')

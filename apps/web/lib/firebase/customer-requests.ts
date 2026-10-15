@@ -9,17 +9,13 @@ export function listenToCustomerRequests(ownerUid: string, onRows: (rows: (Custo
 }
 
 export function listenToManufacturerRequests(onRows: (rows: (CustomerRFQ & { id: string })[]) => void, onError: (error: Error) => void) {
-  const requests = query(collection(manufacturerDb, "rfqs"), where("status", "in", ["Submitted", "Quoted", "In Production"]), orderBy("submittedAt", "desc"))
+  const requests = query(collection(manufacturerDb, "rfqs"), where("status", "in", ["Submitted", "Quoted", "Preparing Production", "In Production", "Completed"]), orderBy("submittedAt", "desc"))
   return onSnapshot(requests, (snapshot) => onRows(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as CustomerRFQ & { id: string })), onError)
 }
 
 export async function setCustomerRequestQuote(id: string, quoteTotal: number) {
   if (!Number.isSafeInteger(quoteTotal) || quoteTotal < 1) throw new Error("Enter a positive whole IDR amount.")
   await updateDoc(doc(manufacturerDb, "rfqs", id), { status: "Quoted", quoteTotal, paymentStatus: "Unpaid", quotedAt: Date.now() })
-}
-
-export async function setCustomerRequestPaid(id: string) {
-  await updateDoc(doc(manufacturerDb, "rfqs", id), { status: "In Production", paymentStatus: "Paid", paidAt: Date.now() })
 }
 
 export async function requestEstimate(id: string) {

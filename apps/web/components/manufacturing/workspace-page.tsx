@@ -45,6 +45,8 @@ import {
   rfqs,
 } from "@/lib/mock/manufacturer"
 import { LiveWorkspace, ManufacturerAccess } from "./live-workspace"
+import { CustomerWorkspace } from "./customer-workspace"
+import { InventoryWorkspace } from "./inventory-workspace"
 import { PricingSettings } from "./pricing-settings"
 
 type PageKey = "dashboard" | "requests" | "rfqs" | "quotations" | "orders" | "production" | "materials" | "equipment" | "customers" | "analytics" | "settings"
@@ -94,28 +96,9 @@ const equipmentRows: DataRow[] = equipment.map((machine) => ({
   Status: machine.status,
 }))
 
-const customerRows: DataRow[] = customers.map((customer) => {
-  const customerRfqs = rfqs.filter((item) => item.customerId === customer.id)
-  const customerOrders = orders.filter((item) => item.customerId === customer.id)
-  const totalValue = customerOrders.reduce((total, order) => {
-    const quote = quotations.find((item) => item.id === order.quotationId)
-    return total + (quote ? quotationPrice(quote) : 0)
-  }, 0)
-  return {
-    "Customer Name": customer.name,
-    Company: customer.company,
-    Email: customer.email,
-    "Total RFQs": customerRfqs.length,
-    "Total Orders": customerOrders.length,
-    "Total Order Value": money(totalValue),
-    "Last Activity": customerRfqs[0]?.received ?? "2026-10-03",
-  }
-})
-
 const tableRows: Partial<Record<PageKey, DataRow[]>> = {
   materials: materialRows,
   equipment: equipmentRows,
-  customers: customerRows,
 }
 
 function getTableTabs(page: PageKey, rows: DataRow[]) {
@@ -134,12 +117,6 @@ function getTableTabs(page: PageKey, rows: DataRow[]) {
   if (page === "orders") return [all, group("awaiting", "Awaiting Production", ["Confirmed", "Queued"]), byStatus("In Production"), byStatus("Quality Check"), group("completed", "Completed", ["Completed", "Delivered"]), byStatus("Cancelled")]
   if (page === "materials") return [all, byStatus("Low stock"), byStatus("In stock")]
   if (page === "equipment") return [all, byStatus("Available"), byStatus("Scheduled"), byStatus("Maintenance"), byStatus("Offline")]
-  if (page === "customers") return [
-    all,
-    { value: "active", label: "Active", matches: (row: DataRow) => Number(row["Total RFQs"]) + Number(row["Total Orders"]) > 0 },
-    { value: "returning", label: "Returning", matches: (row: DataRow) => Number(row["Total RFQs"]) + Number(row["Total Orders"]) > 1 },
-  ]
-
   return [all, ...[...new Set(rows.map((row) => String(row[statusKey] ?? "")))].filter(Boolean).map((value) => byStatus(value))]
 }
 
@@ -179,12 +156,6 @@ const metrics: Partial<Record<PageKey, { label: string; value: string; note?: st
     { label: "Available Equipment", value: `${equipment.filter((machine) => machine.status === "Available").length}` },
     { label: "Scheduled Equipment", value: `${equipment.filter((machine) => machine.scheduledHours > 0).length}` },
     { label: "Maintenance Required", value: `${equipment.filter((machine) => machine.status === "Maintenance").length}` },
-  ],
-  customers: [
-    { label: "Total Customers", value: `${customers.length}` },
-    { label: "Active Customers", value: "5" },
-    { label: "Returning Customers", value: "3" },
-    { label: "Outstanding Quotations", value: "3" },
   ],
   analytics: [
     { label: "RFQ Volume", value: `${rfqs.length}`, note: "Demo period: October 2026" },
@@ -412,6 +383,8 @@ function DetailSheet({ row, onClose }: { row: DataRow | null; onClose: () => voi
 
 export function WorkspacePage({ page }: { page: PageKey }) {
   if (page === "dashboard" || page === "requests") return <ManufacturerAccess><LiveWorkspace key={page} page={page} /></ManufacturerAccess>
+  if (page === "materials" || page === "equipment") return <ManufacturerAccess><InventoryWorkspace page={page} /></ManufacturerAccess>
+  if (page === "customers") return <ManufacturerAccess><CustomerWorkspace /></ManufacturerAccess>
   if (page === "settings") return <ManufacturerAccess><section className="mx-auto w-full max-w-4xl px-4 pb-6"><PricingSettings /></section></ManufacturerAccess>
   return <DemoWorkspacePage page={page} />
 }
