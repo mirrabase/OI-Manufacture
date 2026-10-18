@@ -2,16 +2,16 @@
 
 ## Run the local simulation
 
-Requires Node.js 22.18+ and Java for Firebase Emulator Suite. Install PrusaSlicer on Debian/Ubuntu with `sudo apt-get install prusa-slicer`, then run:
+Requires Node.js 22.18+, pnpm 11.25.0, and Java 21+ for Firebase Emulator Suite. Copy `apps/web/.env.local.example` to `apps/web/.env.local` and `apps/server/.env.example` to `apps/server/.env.local` before the first run. Install PrusaSlicer on Debian/Ubuntu with `sudo apt-get install prusa-slicer`, then run:
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-`pnpm dev` starts Auth, Firestore, Storage, a local slicing worker, and Next.js. The frontend always uses `demo-oi-manufacture` and loopback emulators in development. The worker rejects other project IDs and remote emulator hosts. It does not deploy or use Firebase cloud. If an emulator stops, requests fail instead of falling back to cloud.
+`pnpm dev` starts Firebase Auth and Firestore emulators, a Wrangler R2 simulator, the Hono API, a local slicing worker, and Next.js. R2 files persist locally under `apps/server/.wrangler/state/`; no Firebase Storage emulator is used. The Firebase emulator client rejects other project IDs and remote emulator hosts. Local simulation does not deploy or use Firebase cloud.
 
-PrusaSlicer can also be selected with `PRUSA_SLICER_BIN=/absolute/path/to/prusa-slicer pnpm dev`. This workspace already has a rootless Debian 2.9.2 installation in `.local/prusa/`, which the worker detects automatically. No slicer binaries are committed.
+PrusaSlicer can also be selected with `PRUSA_SLICER_BIN=/absolute/path/to/prusa-slicer pnpm dev`. The worker also detects a rootless installation in `.local/prusa/` when present. No slicer binaries are committed.
 
 Emulator data imports from and exports to `.local/firebase-data/` on a clean shutdown. Stop `pnpm dev` with Ctrl-C and let the export finish. Before restarting an older dev command that lacked automatic export, preserve the running suite with:
 
@@ -55,31 +55,61 @@ Run only one slicing worker per workspace. The seed and worker are local tools; 
 pnpm lint
 pnpm typecheck
 pnpm test:slicing
+pnpm test:server
+pnpm test:bench
+node --test apps/web/lib/overview-refresh.test.mjs apps/web/lib/manufacturing-source.test.mjs
 RUN_SLICER_INTEGRATION=1 pnpm test:slicing
 pnpm verify:local
+pnpm verify:api
 ```
 
-`verify:local` requires the emulators and checks customer ownership, waitlist access, tenant rules, immutable submitted STL, protected previews and production data, pricing validation, quotation/payment transitions, low-stock submissions, purchase receiving, reservations, equipment capacity, production completion, and realtime customer/Manufacturer request listeners. It creates and removes its own fixtures, and restores pricing.
+`verify:local` requires Auth and Firestore emulators. It checks customer ownership, waitlist access, tenant rules, server-only RFQ state transitions, pricing validation, purchase receiving, reservations, equipment capacity, production permissions, and realtime customer/Manufacturer listeners. The server tests exercise payment, shipping, email, notification, AI data, and API authorization workflows. Run `FIRESTORE_EMULATOR_HOST=127.0.0.1:18080 pnpm test:server` to include the AI emulator integration tests; those tests skip when the variable is absent.
 
-## Kasera Pay sandbox
+`verify:api` requires running Auth and Firestore emulators. It reuses a healthy local Wrangler R2 worker or starts one, then starts an isolated Hono API on port `18081` (override with `OI_VERIFY_API_PORT`). The API port must be free; the check leaves the development API on port `8787` running. It checks a full authenticated RFQ lifecycle over HTTP, including file upload/download, quotation, shipping selection, manual payment, and production completion. It uses synthetic data and disables external AI, payment, shipping, and email credentials for the test API.
 
-`pnpm dev` starts the Functions emulator alongside Auth, Firestore, and Storage. Before restarting it, create `functions/.secret.local` (ignored by Git) with a Kasera **Test mode** API key and webhook signing secret:
+## Backend benchmark
+
+Run `pnpm bench:backend` on Linux with Docker and Java available. It builds the production backend image and compares 1 vCPU/512 MiB with 2 vCPU/1 GiB at concurrency 1, 5, and 10. Business requests use an 80/20 lead-time/quotation mix, with two repeats of 5 seconds warmup and 30 seconds measurement. The separate HTTP health baseline uses 5 seconds per stage. Measurement takes about 8–10 minutes after setup.
+
+The runner uses project `demo-oi-benchmark`, a Docker internal network, and separate emulator ports; `pnpm dev` can stay running. Reports and logs are written to `.local/benchmarks/backend/<run-id>/` and stay outside Git. See [the benchmark guide](scripts/bench-backend.md) for prerequisites, isolation, validation, and interpretation limits. These are local emulator measurements, not production capacity or a count of real users.
+
+## Server credentials and provider sandboxes
+
+The Hono server uses strict TypeScript, with HTTP routes, feature modules, and storage infrastructure documented in [apps/server/README.md](apps/server/README.md).
+
+`pnpm dev` runs Hono locally on port `8787`; the ignored `apps/server/.env.local` holds server settings and secrets. Add test credentials as needed:
 
 ```ini
 KASERA_API_KEY=kp_test_...
 KASERA_WEBHOOK_SECRET=...
 RAJAONGKIR_API_KEY=...
 GOOGLE_GENAI_API_KEY=...
+RESEND_API_KEY=...
+R2_LOCAL_WORKER_URL=http://127.0.0.1:8788
+R2_LOCAL_TOKEN=oi-local-r2-only-token
+API_CORS_ORIGINS=http://localhost:3000,http://localhost:3001
 ```
 
-Create the RajaOngkir Shipping Cost API key in the RajaOngkir dashboard. The key stays in the Functions emulator; rate calculations call RajaOngkir's live Shipping Cost API even while Firebase data remains local.
+Create the RajaOngkir Shipping Cost API key in the RajaOngkir dashboard. It stays in Hono; rate calculations call RajaOngkir's live Shipping Cost API even while Firebase data remains local.
 
-The manufacturer dashboard also includes a free-form AI chat and **AI Highlights** on Overview. The Gemini key stays in the Functions emulator. Workspace answers cite the records used; general manufacturing guidance is separated from company facts. The assistant is read-only and chat messages are kept only in the open browser session.
+The manufacturer dashboard also includes a free-form AI chat and **AI Highlights** on Overview. The Gemini key stays in Hono. Workspace answers cite the records used; general manufacturing guidance is separated from company facts. The assistant is read-only and chat messages are kept only in the open browser session. Overview highlights are cached for 30 minutes and refresh when due while the tab is visible; failed refreshes retry after one minute. Citation links open the related workspace.
 
-In Cloudflare, add a **Published application** route to the existing tunnel for `kasera-webhook.mirrabase.com`, targeting `http://127.0.0.1:15001` and matching only `/demo-oi-manufacture/us-central1/kaseraWebhook`. Keep `pnpm dev` and the `cloudflared` tunnel running while testing; confirm `curl -i https://kasera-webhook.mirrabase.com/demo-oi-manufacture/us-central1/kaseraWebhook` returns `200` before adding it in Kasera. In the Kasera dashboard, edit the existing **Test mode → Developer** webhook URL to `https://kasera-webhook.mirrabase.com/demo-oi-manufacture/us-central1/kaseraWebhook` and keep its `payment.paid`, `payment.expired`, and `payment.failed` events enabled. If you create a new endpoint instead, copy its test signing secret to `KASERA_WEBHOOK_SECRET` in `functions/.secret.local`, then restart `pnpm dev`. Enable QRIS and/or Virtual Account under **Settings → Payment methods**. Checkout links use Kasera hosted checkout; the portal never stores payment credentials.
+The Kasera webhook route is `POST /api/webhooks/kasera` on local Hono port `8787`. Configure the existing Cloudflare tunnel to send `kasera-webhook.mirrabase.com` to `http://127.0.0.1:8787/api/webhooks/kasera`, then set that public URL in the Kasera **Test mode → Developer** settings and enable its `payment.paid`, `payment.expired`, and `payment.failed` events. Keep `pnpm dev` and the tunnel running while testing. Enable QRIS and/or Virtual Account under **Settings → Payment methods**. Checkout links use Kasera hosted checkout; the portal never stores payment credentials.
 
-Local Firebase data stays in the emulator. Kasera test mode uses Kasera's API and the stable Cloudflare hostname above for webhook delivery; a `trycloudflare.com` quick-tunnel URL is temporary and must not be saved as the webhook address. Live payments require a deployed HTTPS Functions endpoint, live keys, and Firebase billing; this project is not configured for live payments.
+Local Firebase data stays in the emulator and local files stay in Wrangler's R2 state. Kasera test mode uses Kasera's API and the stable Cloudflare hostname above for webhook delivery; a `trycloudflare.com` quick-tunnel URL is temporary and must not be saved as the webhook address.
 
-With emulators running and the worker stopped, `pnpm verify:worker` checks interrupted job recovery, unsupported process, oversized model, invalid STL, preserved pricing, and clean shutdown. It also removes its own fixtures.
+With Firestore and the local R2 worker running, `pnpm verify:worker` checks interrupted job recovery, unsupported process, oversized model, invalid STL, and preserved pricing. It reuses an active slicer or starts and stops an isolated one, then removes its fixtures.
 
-Build static files with `pnpm --filter web build`; Firebase Hosting serves `apps/web/out`. Configure the intended production Firebase project separately before deploying. Local simulation setup does not deploy any services.
+## CI and deployment
+
+GitHub Actions runs lint, type checks, slicing tests, emulator-backed rules/API/server checks, and the production build on pushes to `development` and `main`. Production deployment waits for a successful CI run on `main` and checks out that exact commit. Configure the GitHub `production` environment with the public Firebase settings and API URL used in [the deployment workflow](.github/workflows/deploy-firebase.yml), plus `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT` for Google Cloud authentication.
+
+Build static files with `pnpm --filter web build`; Firebase Hosting serves `apps/web/out`. GitHub Actions deploys Hosting and Firestore Rules after a merge to `main`. Set `NEXT_PUBLIC_API_URL` in the GitHub production environment to the deployed Hono URL. Existing Firebase Storage objects are left untouched and must be copied into R2 before switching production traffic if the old bucket contains RFQ files.
+
+If a restricted local environment rejects Turbopack’s PostCSS worker with `binding to a port: Operation not permitted`, use `pnpm --filter web exec next build --webpack` to verify the static production build. CI keeps the default `pnpm build` command.
+
+Deploy `apps/server` from AI Studio Build mode as a Node.js full-stack service, then add `FIREBASE_PROJECT_ID`, `CUSTOMER_APP_ORIGIN`, `API_CORS_ORIGINS`, `RESEND_FROM`, `GOOGLE_GENAI_API_KEY`, `KASERA_API_KEY`, `KASERA_WEBHOOK_SECRET`, `RAJAONGKIR_API_KEY`, `RESEND_API_KEY`, and the four R2 settings (`R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`) to its server-side secrets/config. Give the Cloud Run service identity Firestore access (`roles/datastore.user`). Configure the R2 bucket CORS policy using `apps/server/r2-cors.json`, replacing the origin with the Firebase Hosting domain. The Dockerfile keeps the Hono package independently runnable if AI Studio cannot deploy the monorepo subdirectory directly.
+
+## Local video assets
+
+The Remotion production workspace in `demo-video/` is local-only and ignored by Git. Video sources, captures, renders, and deliverables are not part of the application repository or CI.
