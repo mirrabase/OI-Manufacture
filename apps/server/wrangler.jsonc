@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
+  "name": "oi-manufacture-local-r2",
+  "main": "r2-local-worker.mjs",
+  "compatibility_date": "2026-10-18",
+  "vars": {
+    "LOCAL_R2_TOKEN": "oi-local-r2-only-token"
+  },
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "oi-manufacture-local"
+    }
+  ],
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8788
+  }
+}

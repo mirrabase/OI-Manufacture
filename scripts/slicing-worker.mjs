@@ -1,12 +1,16 @@
 import { mkdir, open, readFile, rm, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { db, bucket, seedLocalData } from './local-firebase.mjs'
+import { db, seedLocalData } from './local-firebase.mjs'
 import { calculateEstimate, validatePricing } from '../apps/web/lib/pricing.ts'
 import { getSlicingRequirements, sliceModel } from './slicing.mjs'
 
+import { createR2Store } from '../apps/server/src/infrastructure/storage.ts'
+import { applyRfqEffects } from '../apps/server/src/modules/rfqs/effects.ts'
+const storage = createR2Store()
+
 await mkdir('.local', { recursive: true })
-const lock = '.local/slicing-worker.lock'
+const lock = process.env.OI_SLICING_LOCK_PATH || '.local/slicing-worker.lock'
 try {
   const pid = Number(await readFile(lock, 'utf8'))
   try { process.kill(pid, 0); throw new Error(`Slicing worker ${pid} is already running.`) }
@@ -75,6 +79,7 @@ async function processRequest(ref) {
     return true
   })
   if (claimed === 'quoted') {
+    await applyRfqEffects({ db, rfqId: ref.id, before: request, after: await ref.get() })
     console.log(`[slicer] ${ref.id}: automatic quotation published · Rp ${request.estimate.total}`)
     return
   }
@@ -97,18 +102,17 @@ async function processRequest(ref) {
       if (!['mm', 'inch'].includes(request.requirements.unit)) throw new Error('Invalid model units.')
       const prefix = `rfqs/${request.ownerUid}/${ref.id}/`
       if (!request.model.storagePath.startsWith(prefix)) throw new Error('Invalid STL storage location.')
-      const source = bucket.file(request.model.storagePath)
-      const [metadata] = await source.getMetadata()
-      if (Number(metadata.size) < 1 || Number(metadata.size) > 50 * 1024 * 1024) throw new Error('STL must be between 1 byte and 50 MB.')
+      const metadata = await storage.head(request.model.storagePath)
+      if (metadata.size < 1 || metadata.size > 50 * 1024 * 1024) throw new Error('STL must be between 1 byte and 50 MB.')
       directory = await mkdtemp(join(tmpdir(), 'oi-slice-'))
       const input = join(directory, 'model.stl')
       const output = join(directory, 'preview.gcode')
-      await source.download({ destination: input })
+      await storage.downloadToFile(request.model.storagePath, input)
       const measurements = await sliceModel(input, output, request.requirements.unit, pricing, { signal: controller.signal })
       const costs = calculateEstimate(measurements.gramsPerUnit, measurements.secondsPerUnit, request.requirements.quantity, pricing)
       const calculatedAt = Date.now()
       const gcodePath = `${prefix}preview-${calculatedAt}.gcode`
-      await bucket.upload(output, { destination: gcodePath, metadata: { contentType: 'text/plain' }, resumable: false })
+      await storage.putFile(gcodePath, output, 'text/plain')
       estimate = { status: 'ready', requestedAt, ...measurements, ...costs, pricing, calculatedAt,
         profile: 'Simulation · Prusa MK3S+ · PLA · nozzle 0.4 mm · no supports', gcodePath }
     }
@@ -118,9 +122,10 @@ async function processRequest(ref) {
     if (directory) await rm(directory, { recursive: true, force: true })
   }
   // A quote or payment may have been saved while slicing; never overwrite those fields.
-  await db.runTransaction(async (transaction) => {
-    const current = (await transaction.get(ref)).data()
-    if (!current || (current.estimateRequestedAt || 0) !== requestedAt) return
+  const completion = await db.runTransaction(async (transaction) => {
+    const currentSnapshot = await transaction.get(ref)
+    const current = currentSnapshot.data()
+    if (!current || (current.estimateRequestedAt || 0) !== requestedAt) return null
     const update = { estimate }
     if (needsAutomaticQuote({ ...current, estimate })) {
       update.status = 'Quoted'
@@ -128,7 +133,9 @@ async function processRequest(ref) {
       update.quotedAt = estimate.calculatedAt
     }
     transaction.update(ref, update)
+    return { before: current, quoted: update.status === 'Quoted' }
   })
+  if (completion?.quoted) await applyRfqEffects({ db, rfqId: ref.id, before: completion.before, after: await ref.get() })
   console.log(`[slicer] ${ref.id}: ${estimate.status}${estimate.total ? ` · Rp ${estimate.total}` : ''}`)
 }
 

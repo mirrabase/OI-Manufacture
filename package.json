@@ -5,7 +5,7 @@
   "scripts": {
     "build": "turbo build",
     "dev": "node scripts/dev.mjs",
-    "dev:web": "turbo dev",
+    "dev:web": "turbo dev --filter=web",
     "emulators": "firebase emulators:start --project demo-oi-manufacture",
     "lint": "turbo lint",
     "format": "turbo format",
@@ -14,7 +14,8 @@
     "slicing": "node scripts/slicing-worker.mjs",
     "test:slicing": "node --test scripts/slicing.test.mjs",
     "verify:local": "node scripts/verify-local.mjs",
-    "test:payments": "pnpm --filter functions test",
+    "verify:api": "node scripts/verify-api.mjs",
+    "test:server": "pnpm --filter @oi-manufacture/server test",
     "verify:worker": "node scripts/verify-worker.mjs"
   },
   "devDependencies": {
