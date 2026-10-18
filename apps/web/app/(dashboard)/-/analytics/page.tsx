@@ -1,5 +1,5 @@
-import { WorkspacePage } from "@/components/manufacturing/workspace-page"
+import { redirect } from "next/navigation"
 
 export default function Page() {
-  return <WorkspacePage page="analytics" />
+  redirect("/-/overview")
 }

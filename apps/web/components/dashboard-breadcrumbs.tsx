@@ -12,6 +12,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@workspace/ui/components/breadcrumb"
+import { useManufacturerOrganization } from "@/components/manufacturing/organization-provider"
 
 function formatSegment(segment: string) {
   if (segment === "dashboard") return "Overview"
@@ -24,6 +25,7 @@ function formatSegment(segment: string) {
 
 export function DashboardBreadcrumbs() {
   const pathname = usePathname()
+  const organization = useManufacturerOrganization()
   const segments = pathname.split("/").filter(Boolean)
   const pageSegments = segments[0] === "-" ? segments.slice(1) : segments
 
@@ -32,7 +34,7 @@ export function DashboardBreadcrumbs() {
       <Breadcrumb>
         <BreadcrumbList className="gap-2.5">
           <BreadcrumbItem>
-            <BreadcrumbLink render={<Link href="/-/" />}>Your work</BreadcrumbLink>
+            <BreadcrumbLink render={<Link href="/-/overview/" />}>{organization.name}</BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator>/</BreadcrumbSeparator>
           {pageSegments.length === 0 ? (

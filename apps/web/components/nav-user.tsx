@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import {
   Avatar,
   AvatarFallback,
@@ -15,7 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@workspace/ui/components/dropdown-menu"
 import { Button } from "@workspace/ui/components/button"
-import { CircleUserRoundIcon, CreditCardIcon, BellIcon, LogOutIcon } from "lucide-react"
+import { CircleUserRoundIcon, CreditCardIcon, LogOutIcon } from "lucide-react"
 
 export function NavUser({
   user,
@@ -23,9 +24,11 @@ export function NavUser({
   user: {
     name: string
     email: string
-    avatar: string
+    avatar?: string
   }
 }) {
+  const initials = user.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -40,8 +43,8 @@ export function NavUser({
         }
       >
         <Avatar className="size-7 rounded-full">
-          <AvatarImage src={user.avatar} alt={user.name} />
-          <AvatarFallback className="rounded-full">CN</AvatarFallback>
+          {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
+          <AvatarFallback className="rounded-full">{initials}</AvatarFallback>
         </Avatar>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -54,8 +57,8 @@ export function NavUser({
           <DropdownMenuLabel className="p-0 font-normal">
             <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
               <Avatar className="size-8">
-                <AvatarImage src={user.avatar} alt={user.name} />
-                <AvatarFallback className="rounded-lg">CN</AvatarFallback>
+                {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
+                <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
               </Avatar>
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{user.name}</span>
@@ -68,17 +71,13 @@ export function NavUser({
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuItem>
+          <DropdownMenuItem render={<Link href="/-/settings#account" />}>
             <CircleUserRoundIcon />
             Account
           </DropdownMenuItem>
-          <DropdownMenuItem>
+          <DropdownMenuItem render={<Link href="/-/settings#billing" />}>
             <CreditCardIcon />
             Billing
-          </DropdownMenuItem>
-          <DropdownMenuItem>
-            <BellIcon />
-            Notifications
           </DropdownMenuItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
