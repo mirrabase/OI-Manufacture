@@ -2,6 +2,7 @@ export type EquipmentStatus = "Available" | "Scheduled" | "Maintenance" | "Offli
 
 export type MaterialRecord = {
   id: string
+  organizationId: string
   name: string
   category: string
   manufacturer: string
@@ -14,6 +15,7 @@ export type MaterialRecord = {
 
 export type EquipmentRecord = {
   id: string
+  organizationId: string
   name: string
   manufacturer: string
   model: string
@@ -29,6 +31,7 @@ export type EquipmentRecord = {
 
 export type ProductionOrder = {
   id: string
+  organizationId: string
   rfqId: string
   status: "Preparing Production" | "Scheduled" | "In Production" | "Completed"
   materialId: string
@@ -37,12 +40,15 @@ export type ProductionOrder = {
   plannedHours: number
   reservedKg: number
   actualGrams?: number
+  scheduledStartDate?: string
+  estimatedCompletionDate?: string
   createdAt: number
   updatedAt: number
 }
 
 export type PurchaseOrder = {
   id: string
+  organizationId: string
   supplier: string
   materialId: string
   quantity: number
@@ -61,6 +67,22 @@ export type ProductionRequest = {
   model: { boundingBoxMm: [number, number, number] }
 }
 
+export function getCompatibleEquipment(request: ProductionRequest, material: MaterialRecord | undefined, equipment: EquipmentRecord[]) {
+  if (!material) return []
+  const requestedMaterial = request.requirements.material.toLowerCase()
+  if (requestedMaterial !== "not sure" && material.name.toLowerCase() !== requestedMaterial && !material.name.toLowerCase().startsWith(`${requestedMaterial} `)) return []
+  const process = request.requirements.process
+  const part = [...request.model.boundingBoxMm].sort((a, b) => b - a)
+  return equipment.filter((machine) => {
+    const volume = [...machine.buildVolumeMm].sort((a, b) => b - a)
+    const supportsProcess = process === "Not sure" || machine.technology === process || (process === "SLA" && machine.technology === "MSLA")
+    return machine.status !== "Maintenance" && machine.status !== "Offline"
+      && machine.compatibleMaterialIds.includes(material.id)
+      && supportsProcess
+      && part.every((dimension, index) => dimension <= volume[index]!)
+  })
+}
+
 export function getProductionReadiness(
   request: ProductionRequest,
   plan: ProductionOrder,
@@ -70,7 +92,9 @@ export function getProductionReadiness(
   const blockers: string[] = []
   const warnings: string[] = []
   const material = materials.find((item) => item.id === plan.materialId)
-  const machine = equipment.find((item) => item.id === plan.equipmentId)
+  const assignedEquipmentId = plan.status === "Preparing Production" ? "" : plan.equipmentId
+  const candidates = getCompatibleEquipment(request, material, equipment.filter((item) => !assignedEquipmentId || item.id === assignedEquipmentId))
+  const machine = candidates[0]
   const requiredKg = plan.plannedGrams / 1000
 
   if (request.paymentStatus !== "Paid") blockers.push("Payment has not been confirmed.")
@@ -89,25 +113,12 @@ export function getProductionReadiness(
   }
 
   if (!Number.isFinite(plan.plannedHours) || plan.plannedHours <= 0) blockers.push("Enter the planned machine time in hours.")
-  if (!machine) blockers.push("Assign compatible equipment.")
-  else {
-    if (machine.status !== "Available") blockers.push(`${machine.name} is ${machine.status.toLowerCase()}.`)
-    if (plan.plannedHours > machine.workingHours - machine.scheduledHours) blockers.push(`${machine.name} does not have enough working hours available.`)
-    if (material && !machine.compatibleMaterialIds.includes(material.id)) blockers.push(`${machine.name} is not configured for ${material.name}.`)
-    const process = request.requirements.process
-    const supportsProcess = process === "Not sure"
-      || machine.technology === process
-      || (process === "SLA" && machine.technology === "MSLA")
-    if (!supportsProcess) blockers.push(`${machine.name} does not support ${process}.`)
-    const part = [...request.model.boundingBoxMm].sort((a, b) => b - a)
-    const volume = [...machine.buildVolumeMm].sort((a, b) => b - a)
-    if (part.some((dimension, index) => dimension > volume[index]!)) blockers.push(`${request.id}'s bounding box exceeds ${machine.name}'s build volume.`)
-  }
+  if (!machine) blockers.push(assignedEquipmentId ? "The assigned equipment is unavailable or incompatible." : "No compatible equipment is available for this request.")
 
   return { blockers, warnings, ready: blockers.length === 0 }
 }
 
-export function validateMaterial(value: Omit<MaterialRecord, "id" | "stock" | "reserved">) {
+export function validateMaterial(value: Omit<MaterialRecord, "id" | "organizationId" | "stock" | "reserved">) {
   if (!value.name.trim() || !value.category.trim() || !value.manufacturer.trim()
     || !value.properties.trim() || !Number.isSafeInteger(value.unitCost) || value.unitCost < 0
     || !Number.isFinite(value.reorderAt) || value.reorderAt < 0 || value.reorderAt > 100_000) {
@@ -115,7 +126,7 @@ export function validateMaterial(value: Omit<MaterialRecord, "id" | "stock" | "r
   }
 }
 
-export function validateEquipment(value: Omit<EquipmentRecord, "id" | "scheduledHours" | "activeProductionOrderId">) {
+export function validateEquipment(value: Omit<EquipmentRecord, "id" | "organizationId" | "scheduledHours" | "activeProductionOrderId">) {
   if (!value.name.trim() || !value.manufacturer.trim() || !value.model.trim() || !value.technology.trim()
     || value.buildVolumeMm.length !== 3 || !value.buildVolumeMm.every((dimension) => Number.isFinite(dimension) && dimension > 0 && dimension <= 2000)
     || !Number.isSafeInteger(value.hourlyCost) || value.hourlyCost < 0 || value.hourlyCost > 10_000_000

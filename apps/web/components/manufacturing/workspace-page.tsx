@@ -2,23 +2,10 @@
 
 import { useMemo, useState } from "react"
 import {
-  ActivityIcon,
   ArrowDownIcon,
   ArrowUpIcon,
-  ArrowUpRightIcon,
-  FileTextIcon,
-  GaugeIcon,
   SearchIcon,
 } from "lucide-react"
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts"
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -44,12 +31,12 @@ import {
   quotations,
   rfqs,
 } from "@/lib/mock/manufacturer"
-import { LiveWorkspace, ManufacturerAccess } from "./live-workspace"
+import { LiveWorkspace } from "./live-workspace"
 import { CustomerWorkspace } from "./customer-workspace"
 import { InventoryWorkspace } from "./inventory-workspace"
-import { PricingSettings } from "./pricing-settings"
+import { OrganizationSettings } from "./organization-settings"
 
-type PageKey = "dashboard" | "requests" | "rfqs" | "quotations" | "orders" | "production" | "materials" | "equipment" | "customers" | "analytics" | "settings"
+type PageKey = "dashboard" | "requests" | "rfqs" | "quotations" | "orders" | "production" | "materials" | "equipment" | "customers" | "settings"
 type DataRow = Record<string, string | number>
 
 const pageInfo: Record<PageKey, { title: string; description: string }> = {
@@ -62,7 +49,6 @@ const pageInfo: Record<PageKey, { title: string; description: string }> = {
   materials: { title: "Materials", description: "Monitor filament and resin inventory for upcoming work." },
   equipment: { title: "Equipment", description: "Review machine capabilities and planned workload." },
   customers: { title: "Customers", description: "Manage customer relationships and manufacturing history." },
-  analytics: { title: "Analytics", description: "Review demo quotation, production, and business performance." },
   settings: { title: "Settings", description: "Configure local workspace defaults for this prototype." },
 }
 
@@ -157,23 +143,8 @@ const metrics: Partial<Record<PageKey, { label: string; value: string; note?: st
     { label: "Scheduled Equipment", value: `${equipment.filter((machine) => machine.scheduledHours > 0).length}` },
     { label: "Maintenance Required", value: `${equipment.filter((machine) => machine.status === "Maintenance").length}` },
   ],
-  analytics: [
-    { label: "RFQ Volume", value: `${rfqs.length}`, note: "Demo period: October 2026" },
-    { label: "Quote Acceptance Rate", value: "67%", note: "2 of 3 decided quotes" },
-    { label: "Average Quotation Value", value: money(Math.round(quotations.reduce((sum, quote) => sum + quotationPrice(quote), 0) / quotations.length)) },
-    { label: "Accepted Order Value", value: money(orders.reduce((sum, order) => sum + (quotations.find((quote) => quote.id === order.quotationId) ? quotationPrice(quotations.find((quote) => quote.id === order.quotationId)!) : 0), 0)) },
-  ],
   settings: [],
 }
-
-const workload = [
-  { day: "Mon", scheduled: 21, available: 37 },
-  { day: "Tue", scheduled: 27, available: 31 },
-  { day: "Wed", scheduled: 24, available: 34 },
-  { day: "Thu", scheduled: 32, available: 26 },
-  { day: "Fri", scheduled: 29, available: 29 },
-  { day: "Sat", scheduled: 16, available: 24 },
-]
 
 function StatusBadge({ value }: { value: string }) {
   const variant = ["Feasible", "Accepted", "Available", "Completed", "Delivered", "In stock"].includes(value)
@@ -189,9 +160,9 @@ function Metrics({ page }: { page: PageKey }) {
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {metrics[page]?.map((metric) => (
         <Card key={metric.label} size="sm" className="min-w-0">
-          <CardHeader className="pb-1">
-            <CardDescription>{metric.label}</CardDescription>
-            <CardTitle className="truncate text-xl tabular-nums">{metric.value}</CardTitle>
+          <CardHeader>
+            <CardDescription className="text-xs font-normal">{metric.label}</CardDescription>
+            <CardTitle className="truncate text-xl font-semibold tabular-nums">{metric.value}</CardTitle>
           </CardHeader>
           {metric.note ? <CardContent className="text-xs text-muted-foreground">{metric.note}</CardContent> : null}
         </Card>
@@ -250,34 +221,6 @@ function RecordsTable({ page, rows, onSelect, showStatusTabs = true }: { page: P
     </TabsList>
     <TabsContent value={activeTab}>{table}</TabsContent>
   </Tabs>
-}
-
-function CapacityChart() {
-  return (
-    <Card>
-      <CardHeader><CardTitle>Production Capacity &amp; Workload</CardTitle><CardDescription>Scheduled hours compared with available hours · demo schedule</CardDescription></CardHeader>
-      <CardContent className="h-64 pr-4">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={workload}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-            <XAxis dataKey="day" tickLine={false} axisLine={false} />
-            <YAxis tickLine={false} axisLine={false} width={36} />
-            <Tooltip contentStyle={{ background: "var(--popover)", borderColor: "var(--border)", borderRadius: 8 }} />
-            <Area dataKey="scheduled" name="Scheduled hours" type="monotone" stroke="var(--chart-1)" fill="var(--chart-1)" fillOpacity={0.2} />
-            <Area dataKey="available" name="Available hours" type="monotone" stroke="var(--chart-2)" fill="var(--chart-2)" fillOpacity={0.12} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </CardContent>
-    </Card>
-  )
-}
-
-function Analytics() {
-  return <div className="grid gap-3 xl:grid-cols-2"><CapacityChart />
-    <Card><CardHeader><CardTitle>Quotation Status Distribution</CardTitle><CardDescription>Six sample quotations</CardDescription></CardHeader><CardContent className="space-y-3">{["Draft", "Pending Review", "Sent", "Accepted", "Rejected", "Expired"].map((status) => { const amount = quotations.filter((quote) => quote.status === status).length; return <div key={status} className="grid grid-cols-[7rem_1fr_2rem] items-center gap-3 text-sm"><span>{status}</span><div className="h-2 rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${amount / quotations.length * 100}%` }} /></div><span className="text-right tabular-nums text-muted-foreground">{amount}</span></div> })}</CardContent></Card>
-    <Card><CardHeader><CardTitle>Business Performance</CardTitle><CardDescription>Mock values derived from quotation records</CardDescription></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">Quoted value</p><p className="text-base font-semibold">{money(quotations.reduce((sum, quote) => sum + quotationPrice(quote), 0))}</p></div><div><p className="text-xs text-muted-foreground">Accepted order value</p><p className="text-base font-semibold">{money(orders.reduce((sum, order) => { const quote = quotations.find((item) => item.id === order.quotationId); return sum + (quote ? quotationPrice(quote) : 0) }, 0))}</p></div><div><p className="text-xs text-muted-foreground">Top materials by sample jobs</p><p className="text-base font-semibold">PETG and PLA · 2 jobs each</p></div><div><p className="text-xs text-muted-foreground">Top customers by RFQ volume</p><p className="text-base font-semibold">AeroMotion and Karya Medika · 2 each</p></div></CardContent></Card>
-    <Card><CardHeader><CardTitle>Production Performance</CardTitle><CardDescription>Scheduled capacity and sample jobs</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Scheduled utilization</p><p className="text-base font-semibold">{Math.round(equipment.reduce((sum, machine) => sum + machine.scheduledHours, 0) / equipment.reduce((sum, machine) => sum + machine.workingHours, 0) * 100)}%</p></div><div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Estimated production hours</p><p className="text-base font-semibold">{productionJobs.reduce((sum, job) => sum + job.duration, 0)}h</p></div>{["Queued", "Running", "Quality Check", "Completed", "Delayed"].map((status) => <div key={status} className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">{status}</p><p className="text-base font-semibold">{productionJobs.filter((job) => job.status === status).length} jobs</p></div>)}</CardContent></Card>
-  </div>
 }
 
 function EquipmentViews({ onSelect }: { onSelect: (row: DataRow) => void }) {
@@ -382,10 +325,10 @@ function DetailSheet({ row, onClose }: { row: DataRow | null; onClose: () => voi
 }
 
 export function WorkspacePage({ page }: { page: PageKey }) {
-  if (page === "dashboard" || page === "requests") return <ManufacturerAccess><LiveWorkspace key={page} page={page} /></ManufacturerAccess>
-  if (page === "materials" || page === "equipment") return <ManufacturerAccess><InventoryWorkspace page={page} /></ManufacturerAccess>
-  if (page === "customers") return <ManufacturerAccess><CustomerWorkspace /></ManufacturerAccess>
-  if (page === "settings") return <ManufacturerAccess><section className="mx-auto w-full max-w-4xl px-4 pb-6"><PricingSettings /></section></ManufacturerAccess>
+  if (page === "dashboard" || page === "requests") return <LiveWorkspace key={page} page={page} />
+  if (page === "materials" || page === "equipment") return <InventoryWorkspace page={page} />
+  if (page === "customers") return <CustomerWorkspace />
+  if (page === "settings") return <OrganizationSettings />
   return <DemoWorkspacePage page={page} />
 }
 
@@ -396,7 +339,6 @@ function DemoWorkspacePage({ page }: { page: PageKey }) {
   return <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 pb-6 md:px-6">
     <div><h1 className="text-xl font-semibold">{info.title}</h1><p className="mt-1 text-sm text-muted-foreground">{info.description}</p><Badge variant="outline" className="mt-2">Demo data · not connected to customer requests</Badge></div>
     <Metrics page={page} />
-    {page === "analytics" ? <Analytics /> : null}
     {page === "equipment" ? <EquipmentViews onSelect={setSelected} /> : null}
     {rows.length > 0 && page !== "equipment" ? <RecordsTable page={page} rows={rows} onSelect={setSelected} /> : null}
     <DetailSheet row={selected} onClose={() => setSelected(null)} />

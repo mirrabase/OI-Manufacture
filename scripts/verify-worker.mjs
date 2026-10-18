@@ -11,9 +11,9 @@ const ids = ['recovery', 'oversized', 'invalid'].map((suffix) => `${prefix}-${su
 const sourcePath = `rfqs/verification/${ids[2]}/model.stl`
 let worker
 try {
-  const before = (await db.doc('pricing/default').get()).data()
+  const before = (await db.doc('pricing/demo').get()).data()
   for (const [index, id] of ids.entries()) {
-    await db.doc(`rfqs/${id}`).set({ ownerUid: 'verification', customer: { name: 'Worker verification', email: 'test@example.invalid' },
+    await db.doc(`rfqs/${id}`).set({ organizationId: 'demo', ownerUid: 'verification', customer: { name: 'Worker verification', email: 'test@example.invalid' },
       product: 'Worker verification', requirements: { quantity: 1, material: 'PLA', process: index === 0 ? 'SLA' : 'FDM', unit: 'mm', notes: '' },
       model: { name: 'model.stl', size: 100, contentType: 'model/stl', storagePath: sourcePath, boundingBoxMm: index === 1 ? [251, 10, 10] : [10, 10, 10] },
       status: 'Submitted', paymentStatus: 'Unpaid', createdAt: Date.now(), submittedAt: Date.now(),
@@ -34,7 +34,7 @@ try {
   assert.equal(results[2].estimate.status, 'failed')
   assert.match(results[2].estimate.error, /Could not slice/)
   assert.ok(results.every((request) => request.status === 'Submitted' && request.paymentStatus === 'Unpaid'))
-  assert.deepEqual((await db.doc('pricing/default').get()).data(), before, 'seed must preserve edited pricing')
+  assert.deepEqual((await db.doc('pricing/demo').get()).data(), before, 'seed must preserve edited pricing')
   worker.kill('SIGTERM')
   await exit
   assert.equal(existsSync('.local/slicing-worker.lock'), false)

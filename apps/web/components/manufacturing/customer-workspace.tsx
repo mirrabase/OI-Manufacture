@@ -42,6 +42,7 @@ import {
 } from "@workspace/ui/components/tabs"
 import { formatIDR, type CustomerRFQ } from "@/lib/customer-portal"
 import { listenToManufacturerRequests } from "@/lib/firebase/customer-requests"
+import { useManufacturerOrganization } from "./organization-provider"
 
 type RequestRecord = CustomerRFQ & { id: string }
 type CustomerRecord = {
@@ -108,6 +109,7 @@ function groupCustomers(requests: RequestRecord[]): CustomerRecord[] {
 }
 
 export function CustomerWorkspace() {
+  const organization = useManufacturerOrganization()
   const [requests, setRequests] = useState<RequestRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
@@ -121,6 +123,7 @@ export function CustomerWorkspace() {
   useEffect(
     () =>
       listenToManufacturerRequests(
+        organization.id,
         (rows) => {
           setRequests(rows)
           setLoading(false)
@@ -131,7 +134,7 @@ export function CustomerWorkspace() {
           setLoading(false)
         }
       ),
-    []
+    [organization.id]
   )
 
   const customers = useMemo(() => groupCustomers(requests), [requests])
@@ -218,10 +221,10 @@ export function CustomerWorkspace() {
               ],
               ["Unpaid quotations", unpaidQuoteCount],
             ].map(([label, value]) => (
-              <Card key={label} size="sm">
+              <Card key={label} size="sm" className="min-w-0">
                 <CardHeader>
-                  <CardDescription>{label}</CardDescription>
-                  <CardTitle>{value}</CardTitle>
+                  <CardDescription className="text-xs font-normal">{label}</CardDescription>
+                  <CardTitle className="truncate text-xl font-semibold tabular-nums">{value}</CardTitle>
                 </CardHeader>
               </Card>
             ))}
@@ -248,7 +251,7 @@ export function CustomerWorkspace() {
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value={stage} className="gap-3">
+            <TabsContent value={stage} className="flex flex-col gap-4">
               <div className="flex w-full min-w-0 items-center gap-2">
                 <div className="relative min-w-0 flex-1">
                   <SearchIcon className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />

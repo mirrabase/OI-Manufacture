@@ -3,9 +3,12 @@ import {
   collection,
   deleteField,
   doc,
+  getDocs,
   onSnapshot,
   runTransaction,
   updateDoc,
+  query,
+  where,
   type DocumentData,
   type QueryDocumentSnapshot,
 } from "firebase/firestore"
@@ -13,15 +16,16 @@ import { httpsCallable } from "firebase/functions"
 import { manufacturerDb, manufacturerFunctions } from "./client"
 import {
   getProductionReadiness,
+  getCompatibleEquipment,
   validateEquipment,
   validateMaterial,
   type EquipmentRecord,
   type MaterialRecord,
   type ProductionOrder,
-  type ProductionRequest,
   type PurchaseOrder,
 } from "@/lib/manufacturing-operations"
 import type { CustomerRFQ } from "@/lib/customer-portal"
+import { getCurrentOrganizationId } from "./organization-access"
 
 const materials = collection(manufacturerDb, "materials")
 const equipment = collection(manufacturerDb, "equipment")
@@ -33,20 +37,20 @@ function withId<T>(snapshot: QueryDocumentSnapshot<DocumentData>) {
   return { id: snapshot.id, ...snapshot.data() } as T
 }
 
-export function listenToMaterials(onRows: (rows: MaterialRecord[]) => void, onError: (error: Error) => void) {
-  return onSnapshot(materials, (snapshot) => onRows(snapshot.docs.map((item) => withId<MaterialRecord>(item))), onError)
+export function listenToMaterials(organizationId: string, onRows: (rows: MaterialRecord[]) => void, onError: (error: Error) => void) {
+  return onSnapshot(query(materials, where("organizationId", "==", organizationId)), (snapshot) => onRows(snapshot.docs.map((item) => withId<MaterialRecord>(item))), onError)
 }
 
-export function listenToEquipment(onRows: (rows: EquipmentRecord[]) => void, onError: (error: Error) => void) {
-  return onSnapshot(equipment, (snapshot) => onRows(snapshot.docs.map((item) => withId<EquipmentRecord>(item))), onError)
+export function listenToEquipment(organizationId: string, onRows: (rows: EquipmentRecord[]) => void, onError: (error: Error) => void) {
+  return onSnapshot(query(equipment, where("organizationId", "==", organizationId)), (snapshot) => onRows(snapshot.docs.map((item) => withId<EquipmentRecord>(item))), onError)
 }
 
-export function listenToPurchaseOrders(onRows: (rows: PurchaseOrder[]) => void, onError: (error: Error) => void) {
-  return onSnapshot(purchaseOrders, (snapshot) => onRows(snapshot.docs.map((item) => withId<PurchaseOrder>(item))), onError)
+export function listenToPurchaseOrders(organizationId: string, onRows: (rows: PurchaseOrder[]) => void, onError: (error: Error) => void) {
+  return onSnapshot(query(purchaseOrders, where("organizationId", "==", organizationId)), (snapshot) => onRows(snapshot.docs.map((item) => withId<PurchaseOrder>(item))), onError)
 }
 
-export function listenToProductionOrders(onRows: (rows: ProductionOrder[]) => void, onError: (error: Error) => void) {
-  return onSnapshot(productionOrders, (snapshot) => onRows(snapshot.docs.map((item) => withId<ProductionOrder>(item))), onError)
+export function listenToProductionOrders(organizationId: string, onRows: (rows: ProductionOrder[]) => void, onError: (error: Error) => void) {
+  return onSnapshot(query(productionOrders, where("organizationId", "==", organizationId)), (snapshot) => onRows(snapshot.docs.map((item) => withId<ProductionOrder>(item))), onError)
 }
 
 export function listenToProductionOrder(id: string, onValue: (order: ProductionOrder | null) => void, onError: (error: Error) => void) {
@@ -58,18 +62,25 @@ export async function confirmRequestPayment(id: string) {
   await confirm({ rfqId: id })
 }
 
-export async function saveMaterial(value: Omit<MaterialRecord, "id" | "stock" | "reserved">, id?: string) {
+export async function saveMaterial(value: Omit<MaterialRecord, "id" | "organizationId" | "stock" | "reserved">, id?: string) {
   validateMaterial(value)
   const payload = { ...value, updatedAt: Date.now() }
   if (id) await updateDoc(doc(materials, id), payload)
-  else await addDoc(materials, { ...payload, stock: 0, reserved: 0 })
+  else await addDoc(materials, { ...payload, organizationId: await getCurrentOrganizationId(), stock: 0, reserved: 0 })
 }
 
-export async function saveEquipment(value: Omit<EquipmentRecord, "id" | "scheduledHours" | "activeProductionOrderId">, id?: string) {
+export async function saveEquipment(value: Omit<EquipmentRecord, "id" | "organizationId" | "scheduledHours" | "activeProductionOrderId">, id?: string) {
   validateEquipment(value)
   const payload = { ...value, updatedAt: Date.now() }
-  if (id) await updateDoc(doc(equipment, id), payload)
-  else await addDoc(equipment, { ...payload, scheduledHours: 0 })
+  if (id) {
+    await runTransaction(manufacturerDb, async (transaction) => {
+      const ref = doc(equipment, id)
+      const snapshot = await transaction.get(ref)
+      if (!snapshot.exists()) throw new Error("Equipment not found.")
+      if (snapshot.data().scheduledHours > 0 || snapshot.data().activeProductionOrderId) throw new Error("Equipment cannot be edited while production is queued or running.")
+      transaction.update(ref, payload)
+    })
+  } else await addDoc(equipment, { ...payload, organizationId: await getCurrentOrganizationId(), scheduledHours: 0 })
 }
 
 export async function adjustMaterialStock(id: string, deltaKg: number, reason: string) {
@@ -77,6 +88,7 @@ export async function adjustMaterialStock(id: string, deltaKg: number, reason: s
   if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 100_000 || !reason.trim()) {
     throw new Error("Enter a stock adjustment up to 100,000 kg and a reason.")
   }
+  const organizationId = await getCurrentOrganizationId()
   const materialRef = doc(materials, id)
   const movementRef = doc(inventoryMovements)
   await runTransaction(manufacturerDb, async (transaction) => {
@@ -86,7 +98,7 @@ export async function adjustMaterialStock(id: string, deltaKg: number, reason: s
     const nextStock = Math.round((material.stock + amount) * 1000) / 1000
     if (nextStock < material.reserved || nextStock > 100_000) throw new Error("Stock cannot be lower than reserved stock or exceed 100,000 kg.")
     transaction.update(materialRef, { stock: nextStock, updatedAt: Date.now() })
-    transaction.set(movementRef, { type: "adjustment", materialId: id, deltaKg: amount, reservedDeltaKg: 0, reason: reason.trim(), createdAt: Date.now() })
+    transaction.set(movementRef, { organizationId, type: "adjustment", materialId: id, deltaKg: amount, reservedDeltaKg: 0, reason: reason.trim(), createdAt: Date.now() })
   })
 }
 
@@ -95,10 +107,11 @@ export async function createPurchaseOrder(value: { supplier: string; materialId:
     || !/^\d{4}-\d{2}-\d{2}$/.test(value.eta) || (value.unitCost !== undefined && (!Number.isSafeInteger(value.unitCost) || value.unitCost < 0 || value.unitCost > 10_000_000))) {
     throw new Error("Enter a supplier, material, positive quantity, and expected delivery date.")
   }
-  await addDoc(purchaseOrders, { ...value, supplier: value.supplier.trim(), status: "Ordered", createdAt: Date.now() })
+  await addDoc(purchaseOrders, { ...value, organizationId: await getCurrentOrganizationId(), supplier: value.supplier.trim(), status: "Ordered", createdAt: Date.now() })
 }
 
 export async function receivePurchaseOrder(id: string) {
+  const organizationId = await getCurrentOrganizationId()
   const orderRef = doc(purchaseOrders, id)
   const movementRef = doc(inventoryMovements, `po-${id}`)
   await runTransaction(manufacturerDb, async (transaction) => {
@@ -116,7 +129,7 @@ export async function receivePurchaseOrder(id: string) {
     const now = Date.now()
     transaction.update(materialRef, { stock: nextStock, updatedAt: now })
     transaction.update(orderRef, { status: "Received", receivedAt: now })
-    transaction.set(movementRef, { type: "purchaseReceipt", materialId: order.materialId, deltaKg: order.quantity, reservedDeltaKg: 0, referenceId: id, createdAt: now })
+    transaction.set(movementRef, { organizationId, type: "purchaseReceipt", materialId: order.materialId, deltaKg: order.quantity, reservedDeltaKg: 0, referenceId: id, createdAt: now })
   })
 }
 
@@ -130,7 +143,7 @@ export async function cancelPurchaseOrder(id: string) {
   })
 }
 
-export async function updateProductionOrder(id: string, value: Pick<ProductionOrder, "materialId" | "equipmentId" | "plannedGrams" | "plannedHours">) {
+export async function updateProductionOrder(id: string, value: Pick<ProductionOrder, "materialId" | "plannedGrams" | "plannedHours">) {
   if (!Number.isFinite(value.plannedGrams) || value.plannedGrams < 0 || value.plannedGrams > 100_000_000
     || !Number.isFinite(value.plannedHours) || value.plannedHours < 0 || value.plannedHours > 10_000) {
     throw new Error("Enter valid planned filament and machine time values.")
@@ -143,7 +156,24 @@ export async function updateProductionOrder(id: string, value: Pick<ProductionOr
   })
 }
 
-export async function scheduleProduction(id: string, request: ProductionRequest) {
+function addBusinessDays(date: string, days: number) {
+  const result = new Date(`${date}T12:00:00Z`)
+  let remaining = days
+  while (result.getUTCDay() === 0 || result.getUTCDay() === 6) result.setUTCDate(result.getUTCDate() + 1)
+  while (remaining > 0) {
+    result.setUTCDate(result.getUTCDate() + 1)
+    if (result.getUTCDay() !== 0 && result.getUTCDay() !== 6) remaining--
+  }
+  return result.toISOString().slice(0, 10)
+}
+
+export async function scheduleProduction(id: string, requestedStartDate: string) {
+  const parsedStartDate = new Date(`${requestedStartDate}T12:00:00Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedStartDate) || Number.isNaN(parsedStartDate.getTime()) || parsedStartDate.toISOString().slice(0, 10) !== requestedStartDate) {
+    throw new Error("Choose a valid production start date.")
+  }
+  const organizationId = await getCurrentOrganizationId()
+  const machineRefs = (await getDocs(query(equipment, where("organizationId", "==", organizationId)))).docs.map((item) => doc(equipment, item.id))
   const planRef = doc(productionOrders, id)
   const requestRef = doc(manufacturerDb, "rfqs", id)
   const movementRef = doc(inventoryMovements)
@@ -154,28 +184,38 @@ export async function scheduleProduction(id: string, request: ProductionRequest)
     const rfq = requestSnapshot.data() as CustomerRFQ
     if (plan.status !== "Preparing Production" || rfq.status !== "Preparing Production" || rfq.paymentStatus !== "Paid") throw new Error("This order is not ready to schedule.")
     const materialRef = doc(materials, plan.materialId)
-    const equipmentRef = doc(equipment, plan.equipmentId)
-    const [materialSnapshot, equipmentSnapshot] = await Promise.all([transaction.get(materialRef), transaction.get(equipmentRef)])
-    if (!materialSnapshot.exists() || !equipmentSnapshot.exists()) throw new Error("Select an existing material and machine.")
+    const [materialSnapshot, ...machineSnapshots] = await Promise.all([transaction.get(materialRef), ...machineRefs.map((ref) => transaction.get(ref))])
+    if (!materialSnapshot.exists()) throw new Error("Select an existing production material.")
     const material = { id: materialSnapshot.id, ...materialSnapshot.data() } as MaterialRecord
-    const machine = { id: equipmentSnapshot.id, ...equipmentSnapshot.data() } as EquipmentRecord
-    const readiness = getProductionReadiness({ ...rfq, id }, plan, [material], [machine])
+    const requestWithId = { ...rfq, id }
+    const machines = machineSnapshots.filter((snapshot) => snapshot.exists()).map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }) as EquipmentRecord)
+    const readiness = getProductionReadiness(requestWithId, { ...plan, equipmentId: "" }, [material], machines)
     if (!readiness.ready) throw new Error(readiness.blockers.join(" "))
+    const machine = getCompatibleEquipment(requestWithId, material, machines)
+      .sort((left, right) => (left.scheduledHours || 0) / left.workingHours - (right.scheduledHours || 0) / right.workingHours || left.name.localeCompare(right.name))[0]
+    if (!machine) throw new Error("No compatible equipment has an available production slot.")
+    const equipmentRef = doc(equipment, machine.id)
     const requiredKg = Math.round((plan.plannedGrams / 1000) * 1000) / 1000
+    // shortcut: queue uses aggregate hours, split by daily capacity until date-specific machine shifts are stored.
+    const queueDays = Math.ceil(machine.scheduledHours / machine.workingHours)
+    const scheduledStartDate = addBusinessDays(requestedStartDate, queueDays)
+    const estimatedCompletionDate = addBusinessDays(scheduledStartDate, Math.max(0, Math.ceil(plan.plannedHours / machine.workingHours) - 1))
+    const nextScheduledHours = Math.round((machine.scheduledHours + plan.plannedHours) * 100) / 100
+    if (nextScheduledHours > 100_000) throw new Error("This machine's production queue is full.")
     const now = Date.now()
     transaction.update(materialRef, { reserved: Math.round((material.reserved + requiredKg) * 1000) / 1000, updatedAt: now })
     transaction.update(equipmentRef, {
       status: "Scheduled",
-      scheduledHours: Math.round((machine.scheduledHours + plan.plannedHours) * 100) / 100,
-      activeProductionOrderId: id,
+      scheduledHours: nextScheduledHours,
       updatedAt: now,
     })
-    transaction.update(planRef, { status: "Scheduled", reservedKg: requiredKg, updatedAt: now })
-    transaction.set(movementRef, { type: "reservation", materialId: material.id, deltaKg: 0, reservedDeltaKg: requiredKg, referenceId: id, createdAt: now })
+    transaction.update(planRef, { status: "Scheduled", equipmentId: machine.id, scheduledStartDate, estimatedCompletionDate, reservedKg: requiredKg, updatedAt: now })
+    transaction.set(movementRef, { organizationId, type: "reservation", materialId: material.id, deltaKg: 0, reservedDeltaKg: requiredKg, referenceId: id, createdAt: now })
   })
 }
 
 export async function unscheduleProduction(id: string) {
+  const organizationId = await getCurrentOrganizationId()
   await runTransaction(manufacturerDb, async (transaction) => {
     const planRef = doc(productionOrders, id)
     const snapshot = await transaction.get(planRef)
@@ -189,15 +229,16 @@ export async function unscheduleProduction(id: string) {
     const material = materialSnapshot.data() as MaterialRecord
     const machine = machineSnapshot.data() as EquipmentRecord
     const now = Date.now()
+    const remainingScheduledHours = Math.max(0, Math.round((machine.scheduledHours - plan.plannedHours) * 100) / 100)
     transaction.update(materialRef, { reserved: Math.max(0, Math.round((material.reserved - plan.reservedKg) * 1000) / 1000), updatedAt: now })
     transaction.update(machineRef, {
-      status: "Available",
-      scheduledHours: Math.max(0, Math.round((machine.scheduledHours - plan.plannedHours) * 100) / 100),
-      activeProductionOrderId: deleteField(),
+      status: machine.status === "Maintenance" || machine.status === "Offline" ? machine.status : remainingScheduledHours > 0 || machine.activeProductionOrderId ? "Scheduled" : "Available",
+      scheduledHours: remainingScheduledHours,
+      ...(machine.activeProductionOrderId === id ? { activeProductionOrderId: deleteField() } : {}),
       updatedAt: now,
     })
-    transaction.update(planRef, { status: "Preparing Production", reservedKg: 0, updatedAt: now })
-    transaction.set(doc(inventoryMovements), { type: "release", materialId: plan.materialId, deltaKg: 0, reservedDeltaKg: -plan.reservedKg, referenceId: id, createdAt: now })
+    transaction.update(planRef, { status: "Preparing Production", equipmentId: "", scheduledStartDate: deleteField(), estimatedCompletionDate: deleteField(), reservedKg: 0, updatedAt: now })
+    transaction.set(doc(inventoryMovements), { organizationId, type: "release", materialId: plan.materialId, deltaKg: 0, reservedDeltaKg: -plan.reservedKg, referenceId: id, createdAt: now })
   })
 }
 
@@ -210,6 +251,18 @@ export async function startProduction(id: string) {
       throw new Error("Schedule this order before starting production.")
     }
     const now = Date.now()
+    const plan = { id, ...planSnapshot.data() } as ProductionOrder
+    const machineRef = doc(equipment, plan.equipmentId)
+    const machineSnapshot = await transaction.get(machineRef)
+    if (!machineSnapshot.exists()) throw new Error("The assigned machine is missing.")
+    const activeId = machineSnapshot.data().activeProductionOrderId as string | undefined
+    if (activeId && activeId !== id) {
+      const activePlan = await transaction.get(doc(productionOrders, activeId))
+      if (activePlan.exists() && activePlan.data().status === "In Production") {
+        throw new Error("This machine is already running another production order.")
+      }
+    }
+    transaction.update(machineRef, { status: "Scheduled", activeProductionOrderId: id, updatedAt: now })
     transaction.update(planRef, { status: "In Production", updatedAt: now })
     transaction.update(requestRef, { status: "In Production", productionStartedAt: now })
   })
@@ -217,6 +270,7 @@ export async function startProduction(id: string) {
 
 export async function completeProduction(id: string, actualGrams: number) {
   if (!Number.isFinite(actualGrams) || actualGrams <= 0 || actualGrams > 100_000_000) throw new Error("Enter actual filament usage in grams.")
+  const organizationId = await getCurrentOrganizationId()
   const actualKg = Math.round((actualGrams / 1000) * 1000) / 1000
   await runTransaction(manufacturerDb, async (transaction) => {
     const planRef = doc(productionOrders, id)
@@ -234,15 +288,16 @@ export async function completeProduction(id: string, actualGrams: number) {
     const nextStock = Math.round((material.stock - actualKg) * 1000) / 1000
     if (nextStock < remainingReservations) throw new Error("Actual usage exceeds unreserved stock. Adjust inventory before completing this job.")
     const now = Date.now()
+    const remainingScheduledHours = Math.max(0, Math.round((machineSnapshot.data().scheduledHours - plan.plannedHours) * 100) / 100)
     transaction.update(materialRef, { stock: nextStock, reserved: remainingReservations, updatedAt: now })
     transaction.update(machineRef, {
-      status: "Available",
+      status: remainingScheduledHours > 0 ? "Scheduled" : "Available",
       activeProductionOrderId: deleteField(),
-      scheduledHours: Math.max(0, Math.round((machineSnapshot.data().scheduledHours - plan.plannedHours) * 100) / 100),
+      scheduledHours: remainingScheduledHours,
       updatedAt: now,
     })
     transaction.update(planRef, { status: "Completed", reservedKg: 0, actualGrams, updatedAt: now })
     transaction.update(requestRef, { status: "Completed", completedAt: now })
-    transaction.set(doc(inventoryMovements), { type: "consumption", materialId: plan.materialId, deltaKg: -actualKg, reservedDeltaKg: -plan.reservedKg, referenceId: id, createdAt: now })
+    transaction.set(doc(inventoryMovements), { organizationId, type: "consumption", materialId: plan.materialId, deltaKg: -actualKg, reservedDeltaKg: -plan.reservedKg, referenceId: id, createdAt: now })
   })
 }

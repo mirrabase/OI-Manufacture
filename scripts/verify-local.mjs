@@ -17,7 +17,9 @@ const rfqIds = []
 const files = []
 const internalPaths = []
 let inactiveUid
+let waitlistUid
 let previousPricing
+let previousShippingOrigin
 
 function client(name) {
   const app = initializeApp({ projectId, apiKey: 'demo-api-key', storageBucket: `${projectId}.appspot.com` }, `verify-${name}-${randomUUID()}`)
@@ -50,10 +52,11 @@ function waitFor(target, check) {
 
 function requestDraft(uid, id, overrides = {}) {
   return {
+    organizationId: 'demo',
     ownerUid: uid,
     customer: { name: 'Local verification', email: 'test@example.invalid' },
     product: 'Rules verification',
-    requirements: { quantity: 1, material: 'PLA', process: 'FDM', unit: 'mm', notes: '' },
+    requirements: { quantity: 1, material: 'PLA', color: 'Black', infillPercent: 20, process: 'FDM', unit: 'mm', notes: '' },
     model: { name: 'model.stl', size: 100, contentType: 'model/stl', storagePath: `rfqs/${uid}/${id}/model.stl`, boundingBoxMm: [1, 1, 1] },
     status: 'Draft',
     paymentStatus: 'Unpaid',
@@ -67,12 +70,27 @@ try {
   for (const equipmentId of ['EQ-001', 'EQ-002']) {
     assert.ok((await db.doc(`equipment/${equipmentId}`).get()).data().compatibleMaterialIds.includes('MAT-005'))
   }
-  previousPricing = (await db.doc('pricing/default').get()).data()
+  previousPricing = (await db.doc('pricing/demo').get()).data()
+  previousShippingOrigin = (await db.doc('organizations/demo').get()).data().shippingOrigin
   const owner = client('owner'), other = client('other'), manufacturer = client('manufacturer'), inactive = client('inactive')
   await Promise.all([signInAnonymously(owner.auth), signInAnonymously(other.auth), signInAnonymously(inactive.auth),
     signInWithEmailAndPassword(manufacturer.auth, 'manufacturer@oi.local', 'local-manufacturer-123')])
   inactiveUid = inactive.auth.currentUser.uid
   await db.doc(`manufacturers/${inactiveUid}`).set({ active: false })
+  waitlistUid = other.auth.currentUser.uid
+  internalPaths.push(`organizationWaitlist/${waitlistUid}`)
+  await setDoc(doc(other.firestore, 'organizationWaitlist', waitlistUid), {
+    email: '', displayName: '', requestedOrganizationId: 'demo', createdAt: Date.now(),
+  })
+  assert.equal((await getDoc(doc(other.firestore, 'organizationWaitlist', waitlistUid))).exists(), true)
+  await denied(() => setDoc(doc(other.firestore, 'organizations', 'another'), { name: 'Another Organization', active: true }))
+  await denied(() => getDoc(doc(owner.firestore, 'organizations', 'demo')))
+  const origin = { name: 'Demo sender', phone: '081234567890', addressLine: 'Workshop street 1', postalCode: '40123', destinationId: 123, destinationLabel: 'Coblong, Bandung' }
+  await updateDoc(doc(manufacturer.firestore, 'organizations', 'demo'), { shippingOrigin: origin })
+  assert.equal((await getDoc(doc(manufacturer.firestore, 'organizations', 'demo'))).data().shippingOrigin.destinationId, 123)
+  await denied(() => updateDoc(doc(owner.firestore, 'organizations', 'demo'), { shippingOrigin: origin }))
+  await denied(() => updateDoc(doc(manufacturer.firestore, 'organizations', 'demo'), { active: false }))
+  await denied(() => updateDoc(doc(manufacturer.firestore, 'organizations', 'demo'), { shippingOrigin: { ...origin, destinationId: '123' } }))
 
   const id = `verify-${randomUUID()}`
   const noQuoteId = `${id}-no-quote`
@@ -82,9 +100,12 @@ try {
   files.push(path)
   const ownDoc = doc(owner.firestore, 'rfqs', id)
   const noQuoteDoc = doc(owner.firestore, 'rfqs', noQuoteId)
-  const draft = requestDraft(uid, id)
+  const shippingAddress = { recipientName: 'Test receiver', phone: '081234567890', addressLine: 'Customer street 2', postalCode: '40124', destination: { scope: 'domestic', id: 456, label: 'Sumur Bandung, Bandung' } }
+  const draft = requestDraft(uid, id, { shipping: { address: shippingAddress } })
   assert.equal((await getDoc(ownDoc)).exists(), false)
   await denied(() => setDoc(ownDoc, { ...draft, estimate: { status: 'ready', total: 1 } }))
+  await denied(() => setDoc(ownDoc, { ...draft, requirements: { ...draft.requirements, infillPercent: 101 } }))
+  await denied(() => setDoc(doc(owner.firestore, 'rfqs', `${id}-fake-shipping`), requestDraft(uid, `${id}-fake-shipping`, { shipping: { address: shippingAddress, selection: { id: 'jne:REG:1000:IDR', courierCode: 'jne', courierName: 'JNE', service: 'REG', description: '', cost: 1000, etd: '2 days', currency: 'IDR' } } })))
   await setDoc(ownDoc, draft)
   await uploadBytes(ref(owner.storage, path), new TextEncoder().encode('verification STL'), { contentType: 'model/stl' })
   await db.doc(`rfqs/${id}`).update({ estimate: { status: 'unsupported', requestedAt: 0, error: 'Verification fixture' } })
@@ -102,17 +123,19 @@ try {
   internalPaths.push(`materials/${materialId}`, `equipment/${equipmentId}`, poPath, planPath,
     `inventoryMovements/${receiptMovementId}`, `inventoryMovements/${scheduleMovementId}`, `inventoryMovements/${completeMovementId}`)
   await setDoc(doc(manufacturer.firestore, 'materials', materialId), {
+    organizationId: 'demo',
     name: 'PLA', category: 'Test filament', manufacturer: 'Local verification', unitCost: 1000,
     stock: 0, reserved: 0, reorderAt: 0.5, properties: 'Test', updatedAt: Date.now(),
   })
   await setDoc(doc(manufacturer.firestore, 'equipment', equipmentId), {
+    organizationId: 'demo',
     name: 'Test printer', manufacturer: 'Local verification', model: 'Test 1', technology: 'FDM',
     buildVolumeMm: [10, 10, 10], compatibleMaterialIds: [materialId], hourlyCost: 1000,
     workingHours: 8, scheduledHours: 0, status: 'Available', updatedAt: Date.now(),
   })
   const readiness = getProductionReadiness(
     { ...requestDraft(uid, id), id, status: 'Preparing Production', paymentStatus: 'Paid' },
-    { id, rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
+    { id, organizationId: 'demo', rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
     [{ id: materialId, name: 'PLA', stock: 0, reserved: 0, reorderAt: 0.5 }],
     [{ id: equipmentId, name: 'Test printer', technology: 'FDM', compatibleMaterialIds: [materialId], buildVolumeMm: [10, 10, 10], workingHours: 8, scheduledHours: 0, status: 'Available' }],
   )
@@ -120,14 +143,14 @@ try {
   assert.match(readiness.blockers.join(' '), /Short 0\.500 kg/)
   const capacity = getProductionReadiness(
     { ...requestDraft(uid, id), id, status: 'Preparing Production', paymentStatus: 'Paid' },
-    { id, rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
+    { id, organizationId: 'demo', rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
     [{ id: materialId, name: 'PLA', stock: 2, reserved: 0, reorderAt: 0.5 }],
     [{ id: equipmentId, name: 'Test printer', technology: 'FDM', compatibleMaterialIds: [materialId], buildVolumeMm: [10, 10, 10], workingHours: 8, scheduledHours: 7.5, status: 'Available' }],
   )
   assert.match(capacity.blockers.join(' '), /not have enough working hours/)
   const tpuRequest = { ...requestDraft(uid, id), id, status: 'Preparing Production', paymentStatus: 'Paid', requirements: { quantity: 1, material: 'TPU', process: 'FDM', unit: 'mm', notes: '' } }
   const tpuReadiness = getProductionReadiness(tpuRequest,
-    { id, rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
+    { id, organizationId: 'demo', rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
     [{ id: materialId, name: 'TPU 95A', stock: 2, reserved: 0, reorderAt: 0.5 }],
     [{ id: equipmentId, name: 'Test printer', technology: 'FDM', compatibleMaterialIds: [materialId], buildVolumeMm: [10, 10, 10], workingHours: 8, scheduledHours: 0, status: 'Available' }],
   )
@@ -146,16 +169,17 @@ try {
   await denied(() => getDoc(doc(inactive.firestore, 'rfqs', id)))
   await denied(() => updateDoc(ownDoc, { estimate: { status: 'ready', total: 1 } }))
   await denied(() => updateDoc(ownDoc, { estimateRequestedAt: Date.now() }))
-  await denied(() => setDoc(doc(owner.firestore, 'pricing/default'), defaultPricing))
-  await denied(() => setDoc(doc(inactive.firestore, 'pricing/default'), defaultPricing))
-  await denied(() => setDoc(doc(manufacturer.firestore, 'pricing/default'), { ...defaultPricing, layerHeight: 0 }))
-  await denied(() => setDoc(doc(manufacturer.firestore, 'pricing/default'), { ...defaultPricing, setup: -1 }))
-  await setDoc(doc(manufacturer.firestore, 'pricing/default'), { ...previousPricing, setup: previousPricing.setup + 1000 })
-  await setDoc(doc(manufacturer.firestore, 'pricing/default'), previousPricing)
+  await denied(() => setDoc(doc(owner.firestore, 'pricing/demo'), defaultPricing))
+  await denied(() => setDoc(doc(inactive.firestore, 'pricing/demo'), defaultPricing))
+  await denied(() => setDoc(doc(manufacturer.firestore, 'pricing/demo'), { ...defaultPricing, layerHeight: 0 }))
+  await denied(() => setDoc(doc(manufacturer.firestore, 'pricing/demo'), { ...defaultPricing, setup: -1 }))
+  await setDoc(doc(manufacturer.firestore, 'pricing/demo'), { ...previousPricing, setup: previousPricing.setup + 1000 })
+  await setDoc(doc(manufacturer.firestore, 'pricing/demo'), previousPricing)
 
   const quoteSeen = waitFor(ownDoc, (snapshot) => snapshot.data()?.quoteTotal === 42_000 && snapshot.data()?.status === 'Quoted')
   await updateDoc(doc(manufacturer.firestore, 'rfqs', id), { status: 'Quoted', quoteTotal: 42_000, paymentStatus: 'Unpaid', quotedAt: Date.now() })
   await quoteSeen
+  await denied(() => updateDoc(ownDoc, { shipping: { address: shippingAddress, selection: { id: 'jne:REG:1000:IDR', courierCode: 'jne', courierName: 'JNE', service: 'REG', description: '', cost: 1000, etd: '2 days', currency: 'IDR' } } }))
   await denied(() => updateDoc(ownDoc, { status: 'Preparing Production', paymentStatus: 'Paid', paidAt: Date.now() }))
   await denied(() => updateDoc(doc(inactive.firestore, 'rfqs', id), { status: 'Preparing Production', paymentStatus: 'Paid', paidAt: Date.now() }))
   await denied(() => updateDoc(doc(manufacturer.firestore, 'rfqs', id), { status: 'Preparing Production', paymentStatus: 'Paid', paidAt: Date.now() }))
@@ -164,13 +188,17 @@ try {
     const planRef = doc(manufacturer.firestore, 'productionOrders', noQuoteId)
     await transaction.get(requestRef)
     transaction.update(requestRef, { status: 'Preparing Production', paymentStatus: 'Paid', paidAt: Date.now() })
-    transaction.set(planRef, { rfqId: noQuoteId, status: 'Preparing Production', materialId: '', equipmentId: '', plannedGrams: 0, plannedHours: 0, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() })
+    transaction.set(planRef, { rfqId: noQuoteId, organizationId: 'demo', status: 'Preparing Production', materialId: '', equipmentId: '', plannedGrams: 0, plannedHours: 0, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() })
   }))
   await denied(() => updateDoc(doc(manufacturer.firestore, 'rfqs', id), { status: 'Quoted', quoteTotal: 1, quotedAt: Date.now(), product: 'tampered' }))
 
   const attemptId = `${id}-kasera-attempt`
   internalPaths.push(`kaseraPaymentAttempts/${attemptId}`)
-  await db.doc(`kaseraPaymentAttempts/${attemptId}`).set({ rfqId: id, ownerUid: uid, quoteTotal: 42_000, status: 'pending' })
+  internalPaths.push(`shippingRateQuotes/${id}`)
+  await db.doc(`shippingRateQuotes/${id}`).set({ rfqId: id, ownerUid: uid, rates: [] })
+  await denied(() => getDoc(doc(owner.firestore, 'shippingRateQuotes', id)))
+  await denied(() => getDoc(doc(manufacturer.firestore, 'shippingRateQuotes', id)))
+  await db.doc(`kaseraPaymentAttempts/${attemptId}`).set({ rfqId: id, organizationId: 'demo', ownerUid: uid, quoteTotal: 42_000, status: 'pending' })
   await db.doc(`rfqs/${id}`).update({ activeKaseraPaymentAttemptId: attemptId })
   await denied(() => getDoc(doc(owner.firestore, 'kaseraPaymentAttempts', attemptId)))
   await denied(() => getDoc(doc(manufacturer.firestore, 'kaseraPaymentAttempts', attemptId)))
@@ -191,18 +219,18 @@ try {
   const planRef = db.doc(`productionOrders/${id}`)
   assert.equal((await requestRef.get()).data()?.status, 'Quoted')
   await requestRef.update({ status: 'Preparing Production', paymentStatus: 'Paid', paymentConfirmedBy: 'verification', paidAt: now })
-  await planRef.set({ rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: now, updatedAt: now })
+  await planRef.set({ rfqId: id, organizationId: 'demo', status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: now, updatedAt: now })
   assert.equal((await getDoc(doc(manufacturer.firestore, 'productionOrders', id))).data().status, 'Preparing Production')
   await denied(() => getDoc(doc(owner.firestore, 'productionOrders', id)))
 
   const customerPreparing = waitFor(query(collection(owner.firestore, 'rfqs'), where('ownerUid', '==', uid), orderBy('createdAt', 'desc')),
     (snapshot) => snapshot.docs.some((item) => item.id === id && item.data().status === 'Preparing Production'))
-  const manufacturerOrders = waitFor(query(collection(manufacturer.firestore, 'rfqs'), where('status', 'in', ['Preparing Production', 'In Production', 'Completed']), orderBy('submittedAt', 'desc')),
+  const manufacturerOrders = waitFor(query(collection(manufacturer.firestore, 'rfqs'), where('organizationId', '==', 'demo'), where('status', 'in', ['Preparing Production', 'In Production', 'Completed']), orderBy('submittedAt', 'desc')),
     (snapshot) => snapshot.docs.some((item) => item.id === id && item.data().status === 'Preparing Production'))
   await Promise.all([customerPreparing, manufacturerOrders])
 
   await setDoc(doc(manufacturer.firestore, 'purchaseOrders', purchaseId), {
-    supplier: 'Local verification supplier', materialId, quantity: 2, eta: '2026-10-15', status: 'Ordered', createdAt: now,
+    organizationId: 'demo', supplier: 'Local verification supplier', materialId, quantity: 2, eta: '2026-10-15', status: 'Ordered', createdAt: now,
   })
   await runTransaction(manufacturer.firestore, async (transaction) => {
     const materialRef = doc(manufacturer.firestore, 'materials', materialId)
@@ -210,7 +238,7 @@ try {
     const [material, order] = await Promise.all([transaction.get(materialRef), transaction.get(orderRef)])
     transaction.update(materialRef, { stock: material.data().stock + order.data().quantity, updatedAt: Date.now() })
     transaction.update(orderRef, { status: 'Received', receivedAt: Date.now() })
-    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', receiptMovementId), { type: 'purchaseReceipt', materialId, deltaKg: 2, reservedDeltaKg: 0, referenceId: purchaseId, createdAt: Date.now() })
+    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', receiptMovementId), { organizationId: 'demo', type: 'purchaseReceipt', materialId, deltaKg: 2, reservedDeltaKg: 0, referenceId: purchaseId, createdAt: Date.now() })
   })
   assert.equal((await getDoc(doc(manufacturer.firestore, 'materials', materialId))).data().stock, 2)
 
@@ -222,7 +250,7 @@ try {
     transaction.update(materialRef, { reserved: material.data().reserved + 0.5, updatedAt: Date.now() })
     transaction.update(equipmentRef, { status: 'Scheduled', scheduledHours: machine.data().scheduledHours + 1, activeProductionOrderId: id, updatedAt: Date.now() })
     transaction.update(planRef, { status: 'Scheduled', reservedKg: 0.5, updatedAt: Date.now() })
-    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', scheduleMovementId), { type: 'reservation', materialId, deltaKg: 0, reservedDeltaKg: 0.5, referenceId: id, createdAt: Date.now() })
+    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', scheduleMovementId), { organizationId: 'demo', type: 'reservation', materialId, deltaKg: 0, reservedDeltaKg: 0.5, referenceId: id, createdAt: Date.now() })
   })
   await runTransaction(manufacturer.firestore, async (transaction) => {
     const requestRef = doc(manufacturer.firestore, 'rfqs', id)
@@ -242,7 +270,7 @@ try {
     transaction.update(equipmentRef, { status: 'Available', scheduledHours: machine.data().scheduledHours - 1, activeProductionOrderId: deleteField(), updatedAt: Date.now() })
     transaction.update(planRef, { status: 'Completed', reservedKg: 0, actualGrams: 200, updatedAt: Date.now() })
     transaction.update(requestRef, { status: 'Completed', completedAt: Date.now() })
-    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', completeMovementId), { type: 'consumption', materialId, deltaKg: -0.2, reservedDeltaKg: -0.5, referenceId: id, createdAt: Date.now() })
+    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', completeMovementId), { organizationId: 'demo', type: 'consumption', materialId, deltaKg: -0.2, reservedDeltaKg: -0.5, referenceId: id, createdAt: Date.now() })
   })
   await waitFor(doc(owner.firestore, 'rfqs', id), (snapshot) => snapshot.data()?.status === 'Completed')
   assert.equal((await getDoc(doc(manufacturer.firestore, 'materials', materialId))).data().stock, 1.8)
@@ -250,7 +278,9 @@ try {
   await denied(() => getDoc(doc(other.firestore, 'rfqs', id)))
   console.log('PASS: local-only customer submission at zero stock, RFQ privacy, active Manufacturer permissions, paid/quotation rules, production plan privacy, live customer/Manufacturer updates, purchase receiving, stock reservation, equipment capacity, and production completion.')
 } finally {
-  if (previousPricing) await db.doc('pricing/default').set(previousPricing)
+  if (previousPricing) await db.doc('pricing/demo').set(previousPricing)
+  if (previousShippingOrigin) await db.doc('organizations/demo').update({ shippingOrigin: previousShippingOrigin })
+  else await db.doc('organizations/demo').update({ shippingOrigin: FieldValue.delete() })
   for (const id of rfqIds) await db.doc(`rfqs/${id}`).delete()
   for (const path of internalPaths) await db.doc(path).delete()
   for (const path of files) await bucket.file(path).delete({ ignoreNotFound: true })

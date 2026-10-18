@@ -8,8 +8,16 @@ export function listenToCustomerRequests(ownerUid: string, onRows: (rows: (Custo
   return onSnapshot(requests, (snapshot) => onRows(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as CustomerRFQ & { id: string })), onError)
 }
 
-export function listenToManufacturerRequests(onRows: (rows: (CustomerRFQ & { id: string })[]) => void, onError: (error: Error) => void) {
-  const requests = query(collection(manufacturerDb, "rfqs"), where("status", "in", ["Submitted", "Quoted", "Preparing Production", "In Production", "Completed"]), orderBy("submittedAt", "desc"))
+export function listenToCustomerRequest(id: string, onRow: (row: (CustomerRFQ & { id: string }) | null) => void, onError: (error: Error) => void) {
+  const target = doc(db, "rfqs", id)
+  return onSnapshot(target, (snapshot) => {
+    if (!snapshot.exists()) onRow(null)
+    else onRow({ id: snapshot.id, ...snapshot.data() } as CustomerRFQ & { id: string })
+  }, onError)
+}
+
+export function listenToManufacturerRequests(organizationId: string, onRows: (rows: (CustomerRFQ & { id: string })[]) => void, onError: (error: Error) => void) {
+  const requests = query(collection(manufacturerDb, "rfqs"), where("organizationId", "==", organizationId), where("status", "in", ["Submitted", "Under Review", "Quoted", "Preparing Production", "In Production", "Completed", "Closed"]), orderBy("submittedAt", "desc"))
   return onSnapshot(requests, (snapshot) => onRows(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as CustomerRFQ & { id: string })), onError)
 }
 
