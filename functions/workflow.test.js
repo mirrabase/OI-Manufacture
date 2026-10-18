@@ -24,6 +24,13 @@ const attemptIds = []
 const eventIds = []
 const orderIds = []
 
+test.before(async () => {
+  await db.doc("organizations/demo").set(
+    { name: "Demo Organization", active: true, acceptingRequests: true },
+    { merge: true }
+  )
+})
+
 test.after(async () => {
   await Promise.all([
     ...rfqIds.map((id) => db.doc(`rfqs/${id}`).delete()),
@@ -40,13 +47,18 @@ function newRequest(overrides = {}) {
   rfqIds.push(id)
   return {
     id,
+    organizationId: "demo",
     ownerUid: "payment-check-customer",
-    customer: { name: "Test Customer", email: "customer@example.test" },
+    customer: { name: "Test Customer" },
     product: "Payment check",
     requirements: { quantity: 1 },
     status: "Quoted",
     paymentStatus: "Unpaid",
     quoteTotal: 50_000,
+    shipping: {
+      address: { recipientName: "Test Customer", phone: "08123456789", addressLine: "Test street 1", postalCode: "40123", destination: { scope: "domestic", id: 123, label: "Bandung" } },
+      selection: { id: "test:FREE:0:IDR", courierCode: "test", courierName: "Test courier", service: "FREE", description: "Test fixture", cost: 0, etd: "1 day", currency: "IDR" },
+    },
     createdAt: Date.now(),
     ...overrides,
   }
@@ -78,7 +90,8 @@ function paymentRecord(
   attemptId,
   rfqId,
   amount,
-  net = 50_000,
+  fee = 600,
+  net = 49_400,
   status = "succeeded"
 ) {
   return {
@@ -86,6 +99,7 @@ function paymentRecord(
     status,
     currency: "IDR",
     amount,
+    fee,
     net,
     external_id: attemptId,
     merchant_ref: rfqId,
@@ -93,7 +107,7 @@ function paymentRecord(
   }
 }
 
-test("creates one hosted checkout for the owner's exact quote and uses customer-paid fees", async () => {
+test("creates one hosted checkout for the owner's exact quote and records Kasera fees", async () => {
   const rfq = newRequest()
   await db.doc(`rfqs/${rfq.id}`).set(rfq)
   let calls = 0
@@ -116,8 +130,9 @@ test("creates one hosted checkout for the owner's exact quote and uses customer-
       JSON.stringify({
         id: `payreq-${payload.external_id}`,
         currency: "IDR",
-        amount: 50_605,
-        net: rfq.quoteTotal,
+        amount: rfq.quoteTotal,
+        fee: 600,
+        net: rfq.quoteTotal - 600,
         checkout_url: `https://pay.kasera.id/p/${payload.external_id}`,
         expires_at: new Date(Date.now() + 60_000).toISOString(),
       })
@@ -145,7 +160,7 @@ test("creates one hosted checkout for the owner's exact quote and uses customer-
       (await db.doc(`rfqs/${rfq.id}`).get()).data().activeKaseraPaymentAttemptId
     )
     assert.equal(payload.amount, rfq.quoteTotal)
-    assert.equal(payload.fee_bearer, "customer")
+    assert.equal("fee_bearer" in payload, false)
     assert.equal(payload.merchant_ref, rfq.id)
     assert.match(payload.return_url, new RegExp(`rfqId=${rfq.id}`))
     await db
@@ -165,6 +180,17 @@ test("creates one hosted checkout for the owner's exact quote and uses customer-
     await assert.rejects(
       beginKaseraCheckout({ ...args, uid: "somebody-else" }),
       { code: "permission-denied" }
+    )
+    const noDelivery = newRequest()
+    delete noDelivery.shipping
+    await db.doc(`rfqs/${noDelivery.id}`).set(noDelivery)
+    await assert.rejects(
+      beginKaseraCheckout({
+        ...args,
+        rfqId: noDelivery.id,
+        returnUrl: `http://localhost:3001/portal/quotes/detail?id=${noDelivery.id}`,
+      }),
+      { code: "failed-precondition" }
     )
     const draft = newRequest({ status: "Submitted", quoteTotal: null })
     await db.doc(`rfqs/${draft.id}`).set(draft)
@@ -186,11 +212,78 @@ test("creates one hosted checkout for the owner's exact quote and uses customer-
       }),
       { code: "failed-precondition" }
     )
+    const rootReq = newRequest()
+    await db.doc(`rfqs/${rootReq.id}`).set(rootReq)
+    const rootCheckout = await beginKaseraCheckout({
+      ...args,
+      rfqId: rootReq.id,
+      returnUrl: `http://localhost:3001/?orderId=${rootReq.id}`,
+    })
+    assert.match(rootCheckout.checkoutUrl, /^https:\/\/pay\.kasera\.id\/p\//)
     assert.equal(
-      (await db.doc(`rfqs/${rejected.id}`).get()).data()
-        .activeKaseraPaymentAttemptId,
-      undefined
+      payload.return_url,
+      `http://localhost:3001/?orderId=${rootReq.id}&payment=return`
     )
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test("charges the selected shipping amount without changing the Manufacturer quotation", async () => {
+  const rfq = newRequest({ shipping: {
+    address: { recipientName: "Customer", phone: "0812345678", addressLine: "Main street 1", postalCode: "40123", destination: { scope: "domestic", id: 123, label: "Bandung" } },
+    selection: { id: "jne:REG:12000:IDR", courierCode: "jne", courierName: "JNE", service: "REG", description: "Regular", cost: 12_000, etd: "2-3 days", currency: "IDR" },
+  } })
+  await db.doc(`rfqs/${rfq.id}`).set(rfq)
+  let payload
+  const server = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    payload = JSON.parse(Buffer.concat(chunks).toString())
+    response.writeHead(201, { "content-type": "application/json" })
+    response.end(JSON.stringify({
+      id: `payreq-${payload.external_id}`,
+      currency: "IDR",
+      amount: payload.amount,
+      fee: 600,
+      net: payload.amount - 600,
+      checkout_url: `https://pay.kasera.id/p/${payload.external_id}`,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    }))
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    const paymentApiUrl = `http://127.0.0.1:${server.address().port}/v1/transactions`
+    const args = {
+      db,
+      uid: rfq.ownerUid,
+      rfqId: rfq.id,
+      returnUrl: `http://localhost:3001/?orderId=${rfq.id}`,
+      appOrigin: "http://localhost:3001",
+      apiKey: "kp_test_local",
+      paymentApiUrl,
+    }
+    const unselected = newRequest({ shipping: { address: rfq.shipping.address } })
+    await db.doc(`rfqs/${unselected.id}`).set(unselected)
+    await assert.rejects(beginKaseraCheckout({ ...args, rfqId: unselected.id, returnUrl: `http://localhost:3001/?orderId=${unselected.id}` }), { code: "failed-precondition" })
+    const checkout = await beginKaseraCheckout(args)
+    assert.match(checkout.checkoutUrl, /^https:\/\/pay\.kasera\.id\/p\//)
+    assert.equal(payload.amount, 62_000)
+    assert.equal((await db.doc(`rfqs/${rfq.id}`).get()).data().quoteTotal, 50_000)
+    const attemptId = payload.external_id
+    attemptIds.push(attemptId)
+    orderIds.push(rfq.id)
+    const paymentId = `payreq-${attemptId}`
+    rfqForAttempt.set(attemptId, rfq.id)
+    const event = paymentEvent(attemptId, paymentId, 62_000)
+    await processKaseraEvent({
+      db,
+      event,
+      payment: { ...paymentRecord(attemptId, rfq.id, 62_000, 600, 61_400), id: paymentId },
+    })
+    const paid = (await db.doc(`rfqs/${rfq.id}`).get()).data()
+    assert.equal(paid.paymentStatus, "Paid")
+    assert.equal(paid.shipping.selection.cost, 12_000)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
@@ -208,23 +301,27 @@ test("a verified paid event creates production once and flags a second successfu
     .doc(`kaseraPaymentAttempts/${attemptId}`)
     .set({
       rfqId: rfq.id,
+      organizationId: rfq.organizationId,
       ownerUid: rfq.ownerUid,
       quoteTotal: rfq.quoteTotal,
+      amount: rfq.quoteTotal,
+      fee: 600,
+      net: rfq.quoteTotal - 600,
       status: "creating",
     })
   await db
     .doc(`rfqs/${rfq.id}`)
     .update({ activeKaseraPaymentAttemptId: attemptId })
-  const event = paymentEvent(attemptId, paymentId, 50_605)
+  const event = paymentEvent(attemptId, paymentId, 50_000)
   await processKaseraEvent({
     db,
     event,
-    payment: { ...paymentRecord(attemptId, rfq.id, 50_605), id: paymentId },
+    payment: { ...paymentRecord(attemptId, rfq.id, 50_000), id: paymentId },
   })
   await processKaseraEvent({
     db,
     event,
-    payment: { ...paymentRecord(attemptId, rfq.id, 50_605), id: paymentId },
+    payment: { ...paymentRecord(attemptId, rfq.id, 50_000), id: paymentId },
   })
   const paid = (await db.doc(`rfqs/${rfq.id}`).get()).data()
   assert.equal(paid.paymentStatus, "Paid")
@@ -239,16 +336,20 @@ test("a verified paid event creates production once and flags a second successfu
     .doc(`kaseraPaymentAttempts/${secondAttemptId}`)
     .set({
       rfqId: rfq.id,
+      organizationId: rfq.organizationId,
       ownerUid: rfq.ownerUid,
       quoteTotal: rfq.quoteTotal,
+      amount: rfq.quoteTotal,
+      fee: 600,
+      net: rfq.quoteTotal - 600,
       status: "pending",
     })
   const secondPaymentId = `payreq-${randomUUID()}`
   await processKaseraEvent({
     db,
-    event: paymentEvent(secondAttemptId, secondPaymentId, 50_605),
+    event: paymentEvent(secondAttemptId, secondPaymentId, 50_000),
     payment: {
-      ...paymentRecord(secondAttemptId, rfq.id, 50_605),
+      ...paymentRecord(secondAttemptId, rfq.id, 50_000),
       id: secondPaymentId,
     },
   })
@@ -275,8 +376,12 @@ test("rejects a mismatched amount and only active Manufacturer can use manual fa
     .doc(`kaseraPaymentAttempts/${attemptId}`)
     .set({
       rfqId: rfq.id,
+      organizationId: rfq.organizationId,
       ownerUid: rfq.ownerUid,
       quoteTotal: rfq.quoteTotal,
+      amount: rfq.quoteTotal,
+      fee: 600,
+      net: rfq.quoteTotal - 600,
       status: "pending",
     })
   await db
@@ -286,7 +391,7 @@ test("rejects a mismatched amount and only active Manufacturer can use manual fa
     processKaseraEvent({
       db,
       event: paymentEvent(attemptId, paymentId, 50_604),
-      payment: { ...paymentRecord(attemptId, rfq.id, 50_605), id: paymentId },
+      payment: { ...paymentRecord(attemptId, rfq.id, 50_000), id: paymentId },
     }),
     /does not match/
   )
@@ -299,7 +404,13 @@ test("rejects a mismatched amount and only active Manufacturer can use manual fa
     { code: "permission-denied" }
   )
 
-  await db.doc("manufacturers/payment-check-manufacturer").set({ active: true })
+  await db.doc("manufacturers/payment-check-manufacturer").set({ active: true, organizationId: rfq.organizationId })
+  const unquoted = newRequest({ status: "Submitted", quoteTotal: null })
+  await db.doc(`rfqs/${unquoted.id}`).set(unquoted)
+  await assert.rejects(
+    confirmManualPayment({ db, uid: "payment-check-manufacturer", rfqId: unquoted.id }),
+    { code: "failed-precondition" }
+  )
   await assert.rejects(
     confirmManualPayment({
       db,
