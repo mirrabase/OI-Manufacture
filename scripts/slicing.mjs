@@ -9,6 +9,18 @@ export const profilePath = fileURLToPath(new URL('./profiles/mk3s-pla.ini', impo
 const localBinary = fileURLToPath(new URL('../.local/prusa/usr/bin/prusa-slicer', import.meta.url))
 const localLibraries = fileURLToPath(new URL('../.local/prusa/usr/lib/x86_64-linux-gnu', import.meta.url))
 
+export function getSlicingRequirements(requirements) {
+  const legacyHomepage = /^PLA \((Black|White|Grey|Orange|Blue), (15|20|40|100)% infill\)$/.exec(requirements.material)
+  return {
+    material: legacyHomepage ? 'PLA' : requirements.material,
+    ...(legacyHomepage ? { color: legacyHomepage[1] } : {}),
+    infillPercent: Number.isInteger(requirements.infillPercent)
+      ? requirements.infillPercent
+      : legacyHomepage ? Number(legacyHomepage[2]) : undefined,
+    legacyHomepage: Boolean(legacyHomepage),
+  }
+}
+
 export function parseSlicingSummary(gcode) {
   const grams = Number(gcode.match(/^;\s*filament used \[g\]\s*=\s*([\d.]+)\s*$/m)?.[1])
   const duration = gcode.match(/^;\s*estimated printing time \(normal mode\)\s*=\s*(.+)$/m)?.[1]

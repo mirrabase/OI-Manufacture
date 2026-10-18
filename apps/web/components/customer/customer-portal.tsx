@@ -15,8 +15,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { auth, functions } from "@/lib/firebase/client"
 import { downloadModel, listenToCustomerRequests, submitCustomerRequest } from "@/lib/firebase/customer-requests"
 import { formatIDR, type CustomerRFQ, type ManufacturingRequirements, type UploadedModelMetadata } from "@/lib/customer-portal"
+import { readCustomerProfile, saveCustomerProfile } from "@/lib/customer-profile"
+import { DEMO_ORGANIZATION_ID } from "@/lib/organization"
 
 import { EstimatePanel } from "./estimate-panel"
+import { QuoteShippingPanel } from "./quote-shipping-panel"
 
 const ModelPreview = dynamic(() => import("./model-preview"), { ssr: false, loading: () => <div className="grid h-72 place-items-center rounded-xl bg-muted text-sm text-muted-foreground">Loading 3D preview…</div> })
 const MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -47,7 +50,7 @@ export function CustomerPortal({ page }: { page: Page }) {
   if (page === "new") return <QuoteWizard user={user!} />
   if (loading) return <main className="mx-auto max-w-6xl px-4 py-12 text-sm text-muted-foreground">Loading requests…</main>
   if (error) return <main className="mx-auto max-w-6xl px-4 py-12"><p role="alert" className="text-sm text-destructive">Could not load requests: {error}</p><Button className="mt-3" onClick={() => window.location.reload()}>Retry</Button></main>
-  if (page === "quote-detail") return <QuoteDetail requests={requests} error={error} />
+  if (page === "quote-detail") return <QuoteDetail requests={requests} error={error} uid={user.uid} />
   if (page === "order-detail") return <OrderDetail requests={requests} />
   if (page === "quotes") return <QuotesPage requests={requests} error={error} />
   if (page === "orders") return <OrdersPage requests={requests} />
@@ -86,7 +89,7 @@ function OrdersPage({ requests }: { requests: RequestRecord[] }) {
   return <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6"><Heading eyebrow="Workspace" title="Orders" detail="Paid requests move here while production is being prepared and completed." />{orders.length ? <div className="grid gap-3">{orders.map((request) => <Link key={request.id} href={`/portal/orders/detail?id=${encodeURIComponent(request.id)}`} className="rounded-xl border bg-card p-4 hover:bg-muted/30"><p className="text-sm font-semibold">{request.product}</p><p className="mt-1 text-xs text-muted-foreground">{request.id} · {request.requirements.quantity} units · {formatIDR(request.quoteTotal ?? 0)}</p><Badge className="mt-2" variant="outline">{request.status} · Paid</Badge></Link>)}</div> : <Empty title="No active orders" detail="Your request will appear here after payment is confirmed." />}</main>
 }
 
-function QuoteDetail({ requests, error }: { requests: RequestRecord[]; error: string }) {
+function QuoteDetail({ requests, error, uid }: { requests: RequestRecord[]; error: string; uid: string }) {
   const [id, setId] = useState("")
   const [fileError, setFileError] = useState("")
   const [downloading, setDownloading] = useState(false)
@@ -116,20 +119,27 @@ function QuoteDetail({ requests, error }: { requests: RequestRecord[]; error: st
       setPaymentBusy(false)
     }
   }
+  const shippingCost = rfq?.shipping?.selection?.cost
+  const totalDue = rfq?.quoteTotal !== undefined
+    ? shippingCost !== undefined ? rfq.quoteTotal + shippingCost : rfq.paymentStatus === "Paid" ? rfq.quoteTotal : null
+    : null
+  const canPay = Boolean(rfq?.status === "Quoted" && rfq.quoteTotal !== undefined && rfq.quoteTotal > 0 && rfq.paymentStatus === "Unpaid" && rfq.shipping?.address && rfq.shipping.selection && !rfq.paymentReviewRequired && !rfq.activeKaseraPaymentAttemptId)
   return <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8 sm:px-6">
     <Link href="/portal/quotes" className="inline-flex items-center gap-2 text-sm text-muted-foreground"><ArrowLeftIcon className="size-4" /> Quotations</Link>
     {error && !rfq ? <p role="alert" className="text-sm text-destructive">Could not load your requests: {error}</p> : null}
     {rfq ? <>
       <Heading eyebrow={rfq.id} title={rfq.product} detail={`Submitted ${new Date(rfq.submittedAt ?? rfq.createdAt).toLocaleDateString("en-GB")}`} />
       <Card><CardHeader><CardTitle>Request details</CardTitle><CardDescription>Manufacturing requirements and uploaded file</CardDescription></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2">
-        <Detail label="Status" value={rfq.status} /><Detail label="Quantity" value={`${rfq.requirements.quantity} units`} /><Detail label="Material" value={rfq.requirements.material} /><Detail label="Process" value={rfq.requirements.process} /><Detail label="File" value={`${rfq.model.name} · ${formatSize(rfq.model.size)}`} /><Detail label="Bounding box" value={`${rfq.model.boundingBoxMm.map((x) => x.toFixed(1)).join(" × ")} mm`} />
-        {rfq.quoteTotal ? <>
-          <Detail label="Quotation total" value={formatIDR(rfq.quoteTotal)} />
+        <Detail label="Status" value={rfq.status} /><Detail label="Quantity" value={`${rfq.requirements.quantity} units`} /><Detail label="Material" value={`${rfq.requirements.material}${rfq.requirements.color ? ` · ${rfq.requirements.color}` : ""}${rfq.requirements.infillPercent !== undefined ? ` · ${rfq.requirements.infillPercent}% infill` : ""}`} /><Detail label="Process" value={rfq.requirements.process} /><Detail label="File" value={`${rfq.model.name} · ${formatSize(rfq.model.size)}`} /><Detail label="Bounding box" value={`${rfq.model.boundingBoxMm.map((x) => x.toFixed(1)).join(" × ")} mm`} />
+        {rfq.quoteTotal !== undefined ? <>
+          <Detail label="Manufacturing quotation" value={formatIDR(rfq.quoteTotal)} />
+          <Detail label="Total due" value={totalDue === null ? `${formatIDR(rfq.quoteTotal)} + shipping` : formatIDR(totalDue)} />
           <Detail label="Payment" value={rfq.paymentStatus ?? "Unpaid"} />
           {rfq.paymentStatus !== "Paid" ? <div className="sm:col-span-2 grid gap-3 rounded-lg bg-muted/50 p-3">
-            <p className="text-sm text-muted-foreground">Pay securely with Kasera. Kasera adds its processing fee to the checkout total; review the final amount before paying. This page updates after Kasera confirms the payment.</p>
+            <p className="text-sm text-muted-foreground">The total includes manufacturing and the courier you choose below. Pay securely with Kasera; this page updates after Kasera confirms the payment.</p>
             {returnedFromPayment ? <p role="status" className="text-sm">Waiting for Kasera payment confirmation. This page will update automatically.</p> : null}
-            {!rfq.paymentReviewRequired ? <Button type="button" disabled={paymentBusy} onClick={() => void payWithKasera()}>{paymentBusy ? "Opening Kasera…" : "Pay with Kasera"}</Button> : null}
+            {canPay ? <Button type="button" disabled={paymentBusy} onClick={() => void payWithKasera()}>{paymentBusy ? "Opening Kasera…" : `Pay ${formatIDR(totalDue!)} with Kasera`}</Button> : !rfq.paymentReviewRequired && !rfq.activeKaseraPaymentAttemptId ? <p className="text-sm font-medium">Add your delivery address and choose a courier below to see the final total and continue to payment.</p> : null}
+            {rfq.activeKaseraPaymentAttemptId ? <p role="status" className="text-sm">Kasera checkout is already in progress. Finish or return from that payment page to continue.</p> : null}
             {paymentError ? <p role="alert" className="text-sm text-destructive">{paymentError}</p> : null}
           </div> : null}
         </> : <>
@@ -142,6 +152,7 @@ function QuoteDetail({ requests, error }: { requests: RequestRecord[]; error: st
         {rfq.requirements.notes ? <Detail label="Notes" value={rfq.requirements.notes} /> : null}
         <div className="sm:col-span-2"><Button type="button" variant="outline" disabled={downloading} onClick={async () => { setDownloading(true); setFileError(""); try { await downloadModel(rfq.model.storagePath, rfq.model.name) } catch { setFileError("Could not access the uploaded model.") } finally { setDownloading(false) } }}>{downloading ? "Preparing file…" : "Download your STL"}</Button>{fileError ? <p role="alert" className="mt-2 text-xs text-destructive">{fileError}</p> : null}</div>
       </CardContent></Card>
+      <QuoteShippingPanel rfq={rfq} uid={uid} />
       <EstimatePanel request={rfq} />
     </> : <Empty title="Request not found" detail="This request may not belong to your account or is no longer available." />}
   </main>
@@ -175,7 +186,19 @@ function QuoteWizard({ user }: { user: User }) {
   const [rawVolume, setRawVolume] = useState<number | undefined>()
 
   useEffect(() => {
-    try { const saved = JSON.parse(localStorage.getItem(`oi-rfq-draft-${user.uid}`) || "null"); if (saved) { setProduct(saved.product ?? ""); setContactName(saved.contactName ?? ""); setContactEmail(saved.contactEmail ?? ""); setQuantity(saved.quantity ?? "1"); setMaterial(saved.material ?? "PLA"); setProcess(saved.process ?? "FDM"); setUnit(saved.unit ?? "mm"); setNotes(saved.notes ?? ""); setPendingId(saved.pendingId ?? "") } } catch { /* Ignore an invalid local draft. */ }
+    try {
+      const saved = JSON.parse(localStorage.getItem(`oi-rfq-draft-${user.uid}`) || "null")
+      const profile = readCustomerProfile(user.uid)
+      setProduct(saved?.product ?? "")
+      setContactName(saved?.contactName || profile?.name || "")
+      setContactEmail(saved?.contactEmail || profile?.email || "")
+      setQuantity(saved?.quantity ?? "1")
+      setMaterial(saved?.material ?? "PLA")
+      setProcess(saved?.process ?? "FDM")
+      setUnit(saved?.unit ?? "mm")
+      setNotes(saved?.notes ?? "")
+      setPendingId(saved?.pendingId ?? "")
+    } catch { /* Ignore an invalid local draft. */ }
     setDraftReady(true)
   }, [user.uid])
   useEffect(() => { if (draftReady) localStorage.setItem(`oi-rfq-draft-${user.uid}`, JSON.stringify({ product, contactName, contactEmail, quantity, material, process, unit, notes, pendingId })) }, [draftReady, user.uid, product, contactName, contactEmail, quantity, material, process, unit, notes, pendingId])
@@ -222,7 +245,8 @@ function QuoteWizard({ user }: { user: User }) {
     setBusy(true); setMessage("")
     const id = pendingId || `RFQ-${crypto.randomUUID()}`; setPendingId(id)
     const storagePath = `rfqs/${user.uid}/${id}/${file.name}`
-    const draft: CustomerRFQ = { ownerUid: user.uid, customer: { name: contactName.trim(), email: contactEmail.trim() }, product: product.trim(), requirements: { quantity: Number(quantity), material, process, unit, notes: notes.trim() } satisfies ManufacturingRequirements, model: { ...model, storagePath }, status: "Draft", paymentStatus: "Unpaid", createdAt: Date.now() }
+    const draft: CustomerRFQ = { organizationId: DEMO_ORGANIZATION_ID, ownerUid: user.uid, customer: { name: contactName.trim(), email: contactEmail.trim() }, product: product.trim(), requirements: { quantity: Number(quantity), material, process, unit, notes: notes.trim() } satisfies ManufacturingRequirements, model: { ...model, storagePath }, status: "Draft", paymentStatus: "Unpaid", createdAt: Date.now() }
+    saveCustomerProfile(user.uid, { name: contactName.trim(), email: contactEmail.trim() })
     try { await submitCustomerRequest(id, file, draft); localStorage.removeItem(`oi-rfq-draft-${user.uid}`); window.location.assign(`/portal/quotes/detail?id=${encodeURIComponent(id)}`) }
     catch (cause) { setMessage(`${cause instanceof Error ? cause.message : "Submission failed."} Your form details are saved in this browser; select retry to submit again.`) }
     finally { setBusy(false) }

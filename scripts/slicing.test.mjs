@@ -4,7 +4,19 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { calculateEstimate, defaultPricing, validatePricing } from '../apps/web/lib/pricing.ts'
-import { parseSlicingSummary, sliceModel } from './slicing.mjs'
+import { getSlicingRequirements, parseSlicingSummary, sliceModel } from './slicing.mjs'
+
+test('normalizes homepage material preferences for slicing, including legacy RFQs', () => {
+  assert.deepEqual(getSlicingRequirements({ material: 'PLA', infillPercent: 40 }), {
+    material: 'PLA', infillPercent: 40, legacyHomepage: false,
+  })
+  assert.deepEqual(getSlicingRequirements({ material: 'PLA (Black, 20% infill)' }), {
+    material: 'PLA', color: 'Black', infillPercent: 20, legacyHomepage: true,
+  })
+  assert.deepEqual(getSlicingRequirements({ material: 'PLA (Black, 25% infill)' }), {
+    material: 'PLA (Black, 25% infill)', infillPercent: undefined, legacyHomepage: false,
+  })
+})
 
 test('reads real PrusaSlicer summary units and rejects missing or invalid results', () => {
   assert.deepEqual(parseSlicingSummary('; filament used [g] = 12.76\n; estimated printing time (normal mode) = 1h 21m 25s\n'), { gramsPerUnit: 12.76, secondsPerUnit: 4885 })

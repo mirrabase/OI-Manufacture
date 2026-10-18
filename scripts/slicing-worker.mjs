@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { db, bucket, seedLocalData } from './local-firebase.mjs'
 import { calculateEstimate, validatePricing } from '../apps/web/lib/pricing.ts'
-import { sliceModel } from './slicing.mjs'
+import { getSlicingRequirements, sliceModel } from './slicing.mjs'
 
 await mkdir('.local', { recursive: true })
 const lock = '.local/slicing-worker.lock'
@@ -28,6 +28,13 @@ function needsAutomaticQuote(request) {
     && Number.isSafeInteger(request.estimate.total) && request.estimate.total > 0
 }
 
+function canRetryLegacyHomepageRequest(request) {
+  return request.status === 'Submitted' && request.paymentStatus === 'Unpaid'
+    && request.estimate?.status === 'unsupported'
+    && request.estimate.requestedAt === (request.estimateRequestedAt || 0)
+    && getSlicingRequirements(request.requirements).legacyHomepage
+}
+
 async function stop() {
   if (stopping) return
   stopping = true
@@ -48,11 +55,23 @@ async function processRequest(ref) {
     if (!request || !['Submitted', 'Quoted'].includes(request.status) || request.paymentStatus === 'Paid') return false
     requestedAt = request.estimateRequestedAt || 0
     if (request.estimate && request.estimate.status !== 'processing' && request.estimate.requestedAt === requestedAt) {
-      if (!needsAutomaticQuote(request)) return false
-      transaction.update(ref, { status: 'Quoted', quoteTotal: request.estimate.total, paymentStatus: 'Unpaid', quotedAt: request.estimate.calculatedAt || Date.now() })
-      return 'quoted'
+      if (needsAutomaticQuote(request)) {
+        transaction.update(ref, { status: 'Quoted', quoteTotal: request.estimate.total, paymentStatus: 'Unpaid', quotedAt: request.estimate.calculatedAt || Date.now() })
+        return 'quoted'
+      }
+      if (!canRetryLegacyHomepageRequest(request)) return false
     }
-    transaction.update(ref, { estimate: { status: 'processing', requestedAt } })
+    const update = { estimate: { status: 'processing', requestedAt } }
+    const slicingRequirements = getSlicingRequirements(request.requirements)
+    if (slicingRequirements.legacyHomepage) {
+      update.requirements = {
+        ...request.requirements,
+        material: slicingRequirements.material,
+        color: slicingRequirements.color,
+        infillPercent: slicingRequirements.infillPercent,
+      }
+    }
+    transaction.update(ref, update)
     return true
   })
   if (claimed === 'quoted') {
@@ -63,10 +82,15 @@ async function processRequest(ref) {
   let directory
   let estimate
   try {
-    if (request.requirements.process !== 'FDM' || request.requirements.material !== 'PLA') {
+    const slicingRequirements = getSlicingRequirements(request.requirements)
+    if (request.requirements.process !== 'FDM' || slicingRequirements.material !== 'PLA') {
       estimate = { status: 'unsupported', requestedAt, error: 'Automatic slicing currently supports FDM + PLA. The Manufacturer can quote this request manually.' }
     } else {
-      const pricing = (await db.doc('pricing/default').get()).data()
+      const savedPricing = (await db.doc(`pricing/${request.organizationId}`).get()).data()
+      validatePricing(savedPricing)
+      const pricing = slicingRequirements.infillPercent === undefined
+        ? savedPricing
+        : { ...savedPricing, infillPercent: slicingRequirements.infillPercent }
       validatePricing(pricing)
       const dimensions = request.model.boundingBoxMm
       if (!Array.isArray(dimensions) || dimensions.length !== 3 || !dimensions.every((v, i) => Number.isFinite(v) && v > 0 && v <= [250, 210, 210][i])) throw new Error('Model exceeds the 250 × 210 × 210 mm simulation build volume, or has invalid dimensions.')
@@ -115,7 +139,7 @@ try {
     for (const change of snapshot.docChanges()) {
       if (change.type === 'removed' || pending.has(change.doc.id)) continue
       const data = change.doc.data()
-      if (data.estimate && data.estimate.status !== 'processing' && data.estimate.requestedAt === (data.estimateRequestedAt || 0) && !needsAutomaticQuote(data)) continue
+      if (data.estimate && data.estimate.status !== 'processing' && data.estimate.requestedAt === (data.estimateRequestedAt || 0) && !needsAutomaticQuote(data) && !canRetryLegacyHomepageRequest(data)) continue
       pending.add(change.doc.id)
       running = running.then(async () => {
         if (!stopping) await processRequest(change.doc.ref)

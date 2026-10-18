@@ -32,7 +32,7 @@ export default function GcodePreview({ path, asManufacturer = false }: { path: s
       for (const child of group.children) {
         const line = child as THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>
         line.visible = line.material.name !== "path"
-        if (line.visible) line.material.color.set(0x5476e8)
+        if (line.visible) line.material.color.set(0x7c3aed)
       }
       const scene = new THREE.Scene()
       scene.background = new THREE.Color(getComputedStyle(document.documentElement).colorScheme === "dark" ? "#18181b" : "#f4f4f5")

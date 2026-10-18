@@ -20,6 +20,8 @@ export type PrintEstimate = {
 export type ManufacturingRequirements = {
   quantity: number
   material: string
+  color?: string
+  infillPercent?: number
   process: string
   unit: "mm" | "inch"
   notes: string
@@ -34,12 +36,44 @@ export type UploadedModelMetadata = {
   volumeCm3?: number
 }
 
+export type ShippingDestination = {
+  scope: "domestic" | "international"
+  id: number
+  label: string
+}
+
+export type ShippingDestinationOption = ShippingDestination & { postalCode?: string }
+
+export type ShippingAddress = {
+  recipientName: string
+  phone: string
+  addressLine: string
+  postalCode: string
+  destination: ShippingDestination
+}
+
+export type ShippingRate = {
+  id: string
+  courierCode: string
+  courierName: string
+  service: string
+  description: string
+  cost: number
+  etd: string
+  currency: "IDR"
+  weightGrams?: number
+  dimensionsMm?: number[]
+  estimatedAt?: number
+}
+
 export type CustomerRFQ = {
+  organizationId: string
   ownerUid: string
   customer: { name: string; email: string }
   product: string
   requirements: ManufacturingRequirements
   model: UploadedModelMetadata
+  shipping?: { address: ShippingAddress; selection?: ShippingRate }
   status: "Draft" | "Submitted" | "Under Review" | "Quoted" | "Preparing Production" | "In Production" | "Completed" | "Closed"
   quoteTotal?: number
   paymentStatus?: "Unpaid" | "Paid"

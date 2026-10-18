@@ -20,7 +20,7 @@ export default function ModelPreview({ geometry }: { geometry: THREE.BufferGeome
     const light = new THREE.DirectionalLight(0xffffff, 2)
     light.position.set(3, 5, 7)
     scene.add(light)
-    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x5476e8, metalness: 0.08, roughness: 0.55, side: THREE.DoubleSide }))
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x7c3aed, metalness: 0.08, roughness: 0.55, side: THREE.DoubleSide }))
     mesh.geometry.computeVertexNormals()
     scene.add(mesh)
     const box = new THREE.Box3().setFromObject(mesh)
