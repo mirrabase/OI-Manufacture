@@ -24,6 +24,9 @@ dist
 # turbo
 .turbo
 .local/
+firebase-export-*/
+firestore-debug.log
+graphify-out/
 
 # misc
 .DS_Store
