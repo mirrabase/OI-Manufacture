@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [development, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_PUBLIC_FIREBASE_API_KEY: demo-api-key
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: demo-oi-manufacture.firebaseapp.com
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: demo-oi-manufacture
+      NEXT_PUBLIC_USE_FIREBASE_EMULATOR: "false"
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:slicing
+      - run: pnpm test:bench
+      - run: node --test apps/web/lib/overview-refresh.test.mjs apps/web/lib/manufacturing-source.test.mjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Verify Firebase rules and Hono tests
+        run: >-
+          pnpm exec firebase emulators:exec
+          --project demo-oi-manufacture
+          --only auth,firestore
+          "pnpm verify:local && pnpm --filter @oi-manufacture/server test && pnpm verify:api"
+      - run: pnpm build
