@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { AlertTriangleIcon, ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, Loader2Icon, RefreshCwIcon, SearchIcon, SparklesIcon } from "lucide-react"
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@workspace/ui/componen
 import { downloadModel, listenToManufacturerRequests, requestEstimate, setCustomerRequestQuote } from "@/lib/firebase/customer-requests"
 import { useManufacturerOrganization } from "./organization-provider"
 import { formatIDR, type CustomerRFQ } from "@/lib/customer-portal"
+import { scheduleOverviewRefresh, OVERVIEW_TTL_MS, OVERVIEW_RETRY_MS } from "@/lib/overview-refresh"
 import { manufacturerSourceHref } from "@/lib/manufacturing-source"
 import { EstimatePanel } from "@/components/customer/estimate-panel"
 import { getManufacturerOverview, type ManufacturerOverview } from "@/lib/firebase/manufacturing-ai"
@@ -92,19 +93,32 @@ function OverviewHighlights() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError("")
-    try {
-      setData(await getManufacturerOverview())
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "AI Highlights could not load.")
-    } finally {
-      setLoading(false)
-    }
+  const [refreshAt, setRefreshAt] = useState(0)
+  const inFlight = useRef<Promise<number | null> | null>(null)
+  const load = useCallback((): Promise<number | null> => {
+    if (inFlight.current) return inFlight.current
+    const pending = (async () => {
+      setLoading(true)
+      setError("")
+      try {
+        const result = await getManufacturerOverview()
+        setData(result)
+        setRefreshAt(result.generatedAt + OVERVIEW_TTL_MS)
+        return result.generatedAt
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "AI Highlights could not load.")
+        setRefreshAt(Date.now() + OVERVIEW_RETRY_MS)
+        return null
+      } finally {
+        setLoading(false)
+        inFlight.current = null
+      }
+    })()
+    inFlight.current = pending
+    return pending
   }, [])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => scheduleOverviewRefresh({ load, nextAt: refreshAt }), [load, refreshAt])
 
   const priorityRank = { high: 0, medium: 1, low: 2 }
   const featured = [...(data?.insights ?? [])].sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority])[0]
