@@ -2,14 +2,23 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function manufacturer() {
-      return signedIn() && exists(/databases/$(database)/documents/manufacturers/$(request.auth.uid))
-        && get(/databases/$(database)/documents/manufacturers/$(request.auth.uid)).data.active == true;
+    function activeOrganization(orgId) {
+      return orgId is string
+        && exists(/databases/$(database)/documents/organizations/$(orgId))
+        && get(/databases/$(database)/documents/organizations/$(orgId)).data.active == true;
+    }
+    function memberOf(orgId) {
+      return signedIn() && orgId is string
+        && exists(/databases/$(database)/documents/manufacturers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/manufacturers/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/manufacturers/$(request.auth.uid)).data.organizationId == orgId
+        && activeOrganization(orgId);
     }
     function validRate(value) { return value is int && value >= 0 && value <= 10000000; }
     function validMaterial(data) {
-      return data.keys().hasAll(['name', 'category', 'manufacturer', 'unitCost', 'stock', 'reserved', 'reorderAt', 'properties'])
-        && data.keys().hasOnly(['name', 'category', 'manufacturer', 'unitCost', 'stock', 'reserved', 'reorderAt', 'properties', 'updatedAt'])
+      return data.keys().hasAll(['organizationId', 'name', 'category', 'manufacturer', 'unitCost', 'stock', 'reserved', 'reorderAt', 'properties'])
+        && data.keys().hasOnly(['organizationId', 'name', 'category', 'manufacturer', 'unitCost', 'stock', 'reserved', 'reorderAt', 'properties', 'updatedAt'])
+        && data.organizationId is string
         && data.name is string && data.name.size() > 0
         && data.category is string && data.manufacturer is string && data.properties is string
         && validRate(data.unitCost)
@@ -19,8 +28,9 @@ service cloud.firestore {
         && (!('updatedAt' in data) || data.updatedAt is int);
     }
     function validEquipment(data) {
-      return data.keys().hasAll(['name', 'manufacturer', 'model', 'technology', 'buildVolumeMm', 'compatibleMaterialIds', 'hourlyCost', 'workingHours', 'scheduledHours', 'status'])
-        && data.keys().hasOnly(['name', 'manufacturer', 'model', 'technology', 'buildVolumeMm', 'compatibleMaterialIds', 'hourlyCost', 'workingHours', 'scheduledHours', 'status', 'activeProductionOrderId', 'updatedAt'])
+      return data.keys().hasAll(['organizationId', 'name', 'manufacturer', 'model', 'technology', 'buildVolumeMm', 'compatibleMaterialIds', 'hourlyCost', 'workingHours', 'scheduledHours', 'status'])
+        && data.keys().hasOnly(['organizationId', 'name', 'manufacturer', 'model', 'technology', 'buildVolumeMm', 'compatibleMaterialIds', 'hourlyCost', 'workingHours', 'scheduledHours', 'status', 'activeProductionOrderId', 'updatedAt'])
+        && data.organizationId is string
         && data.name is string && data.name.size() > 0
         && data.manufacturer is string && data.model is string && data.technology is string
         && data.buildVolumeMm is list && data.buildVolumeMm.size() == 3
@@ -30,30 +40,87 @@ service cloud.firestore {
         && data.compatibleMaterialIds is list
         && validRate(data.hourlyCost)
         && data.workingHours is number && data.workingHours > 0 && data.workingHours <= 24
-        && data.scheduledHours is number && data.scheduledHours >= 0 && data.scheduledHours <= 24
+        && data.scheduledHours is number && data.scheduledHours >= 0 && data.scheduledHours <= 100000
         && data.status in ['Available', 'Scheduled', 'Maintenance', 'Offline']
         && (!('activeProductionOrderId' in data) || data.activeProductionOrderId is string)
         && (!('updatedAt' in data) || data.updatedAt is int);
     }
+    function validShippingAddress(data) {
+      return data is map
+        && data.keys().hasOnly(['address', 'selection'])
+        && data.address is map
+        && data.address.keys().hasOnly(['recipientName', 'phone', 'addressLine', 'postalCode', 'destination'])
+        && data.address.recipientName is string && data.address.recipientName.size() > 0
+        && data.address.phone is string && data.address.phone.size() > 0
+        && data.address.addressLine is string && data.address.addressLine.size() > 0
+        && data.address.postalCode is string && data.address.postalCode.size() > 0
+        && data.address.destination is map
+        && data.address.destination.keys().hasOnly(['scope', 'id', 'label'])
+        && data.address.destination.scope in ['domestic', 'international']
+        && data.address.destination.id is int && data.address.destination.id > 0
+        && data.address.destination.label is string && data.address.destination.label.size() > 0
+        && (!('selection' in data) || validShippingSelection(data.selection));
+    }
+    function validShippingSelection(data) {
+      return data is map
+        && data.keys().hasOnly(['id', 'courierCode', 'courierName', 'service', 'description', 'cost', 'etd', 'currency', 'weightGrams', 'dimensionsMm', 'estimatedAt'])
+        && data.id is string
+        && data.courierCode is string
+        && data.courierName is string
+        && data['service'] is string
+        && validRate(data.cost)
+        && data.currency == 'IDR';
+    }
+    function validShippingOrigin(data) {
+      return data is map
+        && data.keys().hasOnly(['name', 'phone', 'addressLine', 'postalCode', 'destinationId', 'destinationLabel'])
+        && data.name is string && data.name.size() > 0
+        && data.phone is string && data.phone.size() > 0
+        && data.addressLine is string && data.addressLine.size() > 0
+        && data.postalCode is string && data.postalCode.size() > 0
+        && data.destinationId is int && data.destinationId > 0
+        && data.destinationLabel is string && data.destinationLabel.size() > 0;
+    }
     function validProductionOrder(data, rfqId) {
-      return data.keys().hasAll(['rfqId', 'status', 'materialId', 'equipmentId', 'plannedGrams', 'plannedHours', 'reservedKg', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['rfqId', 'status', 'materialId', 'equipmentId', 'plannedGrams', 'plannedHours', 'reservedKg', 'actualGrams', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['rfqId', 'organizationId', 'status', 'materialId', 'equipmentId', 'plannedGrams', 'plannedHours', 'reservedKg', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['rfqId', 'organizationId', 'status', 'materialId', 'equipmentId', 'plannedGrams', 'plannedHours', 'reservedKg', 'actualGrams', 'scheduledStartDate', 'estimatedCompletionDate', 'createdAt', 'updatedAt'])
         && data.rfqId == rfqId
+        && data.organizationId is string
+        && get(/databases/$(database)/documents/rfqs/$(rfqId)).data.organizationId == data.organizationId
         && data.status in ['Preparing Production', 'Scheduled', 'In Production', 'Completed']
         && data.materialId is string && data.equipmentId is string
         && data.plannedGrams is number && data.plannedGrams >= 0 && data.plannedGrams <= 100000000
         && data.plannedHours is number && data.plannedHours >= 0 && data.plannedHours <= 10000
         && data.reservedKg is number && data.reservedKg >= 0 && data.reservedKg <= 100000
         && data.createdAt is int && data.updatedAt is int
-        && (!('actualGrams' in data) || (data.actualGrams is number && data.actualGrams > 0 && data.actualGrams <= 100000000));
+        && (!('actualGrams' in data) || (data.actualGrams is number && data.actualGrams > 0 && data.actualGrams <= 100000000))
+        && (!('scheduledStartDate' in data) || (data.scheduledStartDate is string && data.scheduledStartDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+        && (!('estimatedCompletionDate' in data) || (data.estimatedCompletionDate is string && data.estimatedCompletionDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')));
     }
     match /manufacturers/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow write: if false;
     }
-    match /pricing/default {
-      allow read: if manufacturer();
-      allow create, update: if manufacturer()
+    match /organizations/{organizationId} {
+      allow read: if memberOf(organizationId);
+      allow update: if memberOf(organizationId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shippingOrigin'])
+        && validShippingOrigin(request.resource.data.shippingOrigin);
+      allow create, delete: if false;
+    }
+    match /organizationWaitlist/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['email', 'displayName', 'requestedOrganizationId', 'createdAt'])
+        && request.resource.data.email == request.auth.token.get('email', '')
+        && request.resource.data.displayName is string
+        && request.resource.data.requestedOrganizationId == 'demo'
+        && request.resource.data.createdAt is int;
+      allow update, delete: if false;
+    }
+    match /pricing/{organizationId} {
+      allow read: if memberOf(organizationId);
+      allow create, update: if memberOf(organizationId)
         && request.resource.data.keys().hasAll(['materialPerKg', 'machinePerHour', 'setup', 'markupPercent', 'minimumTotal', 'layerHeight', 'infillPercent'])
         && request.resource.data.keys().hasOnly(['materialPerKg', 'machinePerHour', 'setup', 'markupPercent', 'minimumTotal', 'layerHeight', 'infillPercent'])
         && validRate(request.resource.data.materialPerKg)
@@ -65,20 +132,23 @@ service cloud.firestore {
         && request.resource.data.infillPercent is number && request.resource.data.infillPercent >= 0 && request.resource.data.infillPercent <= 100;
     }
     match /materials/{materialId} {
-      allow read: if manufacturer();
-      allow create, update: if manufacturer() && validMaterial(request.resource.data);
+      allow read: if memberOf(resource.data.organizationId);
+      allow create: if memberOf(request.resource.data.organizationId) && validMaterial(request.resource.data);
+      allow update: if memberOf(resource.data.organizationId) && request.resource.data.organizationId == resource.data.organizationId && validMaterial(request.resource.data);
       allow delete: if false;
     }
     match /equipment/{equipmentId} {
-      allow read: if manufacturer();
-      allow create, update: if manufacturer() && validEquipment(request.resource.data);
+      allow read: if memberOf(resource.data.organizationId);
+      allow create: if memberOf(request.resource.data.organizationId) && validEquipment(request.resource.data);
+      allow update: if memberOf(resource.data.organizationId) && request.resource.data.organizationId == resource.data.organizationId && validEquipment(request.resource.data);
       allow delete: if false;
     }
     match /purchaseOrders/{purchaseOrderId} {
-      allow read: if manufacturer();
-      allow create: if manufacturer()
+      allow read: if memberOf(resource.data.organizationId);
+      allow create: if memberOf(request.resource.data.organizationId)
+        && request.resource.data.keys().hasAll(['organizationId'])
         && request.resource.data.keys().hasAll(['supplier', 'materialId', 'quantity', 'eta', 'status', 'createdAt'])
-        && request.resource.data.keys().hasOnly(['supplier', 'materialId', 'quantity', 'unitCost', 'eta', 'status', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['organizationId', 'supplier', 'materialId', 'quantity', 'unitCost', 'eta', 'status', 'createdAt'])
         && request.resource.data.supplier is string && request.resource.data.supplier.size() > 0
         && request.resource.data.materialId is string
         && request.resource.data.quantity is number && request.resource.data.quantity > 0 && request.resource.data.quantity <= 100000
@@ -86,7 +156,8 @@ service cloud.firestore {
         && request.resource.data.eta is string
         && request.resource.data.status == 'Ordered'
         && request.resource.data.createdAt is int;
-      allow update: if manufacturer()
+      allow update: if memberOf(resource.data.organizationId)
+        && request.resource.data.organizationId == resource.data.organizationId
         && resource.data.status == 'Ordered'
         && request.resource.data.status in ['Received', 'Cancelled']
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'receivedAt', 'updatedAt'])
@@ -95,10 +166,10 @@ service cloud.firestore {
       allow delete: if false;
     }
     match /inventoryMovements/{movementId} {
-      allow read: if manufacturer();
-      allow create: if manufacturer()
+      allow read: if memberOf(resource.data.organizationId);
+      allow create: if memberOf(request.resource.data.organizationId)
         && request.resource.data.keys().hasAll(['type', 'materialId', 'deltaKg', 'reservedDeltaKg', 'createdAt'])
-        && request.resource.data.keys().hasOnly(['type', 'materialId', 'deltaKg', 'reservedDeltaKg', 'referenceId', 'reason', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['organizationId', 'type', 'materialId', 'deltaKg', 'reservedDeltaKg', 'referenceId', 'reason', 'createdAt'])
         && request.resource.data.type in ['adjustment', 'purchaseReceipt', 'reservation', 'release', 'consumption']
         && request.resource.data.materialId is string
         && request.resource.data.deltaKg is number
@@ -109,12 +180,12 @@ service cloud.firestore {
       allow update, delete: if false;
     }
     match /productionOrders/{rfqId} {
-      allow read: if manufacturer();
-      allow create: if manufacturer()
+      allow read: if memberOf(resource.data.organizationId);
+      allow create: if memberOf(request.resource.data.organizationId)
         && validProductionOrder(request.resource.data, rfqId)
         && getAfter(/databases/$(database)/documents/rfqs/$(rfqId)).data.status == 'Preparing Production'
         && getAfter(/databases/$(database)/documents/rfqs/$(rfqId)).data.paymentStatus == 'Paid';
-      allow update: if manufacturer()
+      allow update: if memberOf(resource.data.organizationId)
         && validProductionOrder(request.resource.data, rfqId)
         && resource.data.rfqId == rfqId
         && get(/databases/$(database)/documents/rfqs/$(rfqId)).data.paymentStatus == 'Paid'
@@ -123,11 +194,25 @@ service cloud.firestore {
           || (resource.data.status == 'In Production' && request.resource.data.status == 'Completed'));
       allow delete: if false;
     }
+    match /notifications/{notificationId} {
+      allow read: if signedIn()
+        && resource.data.recipientUid == request.auth.uid
+        && memberOf(resource.data.organizationId);
+      allow update: if signedIn()
+        && resource.data.recipientUid == request.auth.uid
+        && memberOf(resource.data.organizationId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+        && request.resource.data.readAt is int;
+      allow create, delete: if false;
+    }
     match /rfqs/{rfqId} {
       allow create: if signedIn()
+        && request.resource.data.organizationId is string
+        && activeOrganization(request.resource.data.organizationId)
+        && get(/databases/$(database)/documents/organizations/$(request.resource.data.organizationId)).data.acceptingRequests == true
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.status == 'Draft'
-        && request.resource.data.keys().hasOnly(['ownerUid', 'customer', 'product', 'requirements', 'model', 'status', 'paymentStatus', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['organizationId', 'ownerUid', 'customer', 'product', 'requirements', 'model', 'shipping', 'status', 'paymentStatus', 'createdAt'])
         && request.resource.data.paymentStatus == 'Unpaid'
         && request.resource.data.createdAt is int
         && request.resource.data.customer is map
@@ -135,11 +220,13 @@ service cloud.firestore {
         && request.resource.data.customer.name is string
         && request.resource.data.customer.email is string
         && request.resource.data.requirements is map
-        && request.resource.data.requirements.keys().hasOnly(['quantity', 'material', 'process', 'unit', 'notes'])
+        && request.resource.data.requirements.keys().hasOnly(['quantity', 'material', 'color', 'infillPercent', 'process', 'unit', 'notes'])
         && request.resource.data.requirements.quantity is int
         && request.resource.data.requirements.quantity > 0
         && request.resource.data.requirements.quantity <= 100000
         && request.resource.data.requirements.material is string
+        && (!('color' in request.resource.data.requirements) || request.resource.data.requirements.color in ['Black', 'White', 'Grey', 'Orange', 'Blue'])
+        && (!('infillPercent' in request.resource.data.requirements) || (request.resource.data.requirements.infillPercent is int && request.resource.data.requirements.infillPercent >= 0 && request.resource.data.requirements.infillPercent <= 100))
         && request.resource.data.requirements.process is string
         && request.resource.data.requirements.unit in ['mm', 'inch']
         && request.resource.data.requirements.notes is string
@@ -154,9 +241,12 @@ service cloud.firestore {
         && request.resource.data.model.contentType == 'model/stl'
         && request.resource.data.model.boundingBoxMm is list
         && request.resource.data.model.boundingBoxMm.size() == 3
-        && request.resource.data.model.storagePath.matches('rfqs/' + request.auth.uid + '/' + rfqId + '/.*');
-      allow read: if signedIn() && (resource == null || resource.data.ownerUid == request.auth.uid || (manufacturer() && resource.data.status in ['Submitted', 'Quoted', 'Preparing Production', 'In Production', 'Completed']));
-      allow update: if manufacturer() && resource.data.status == 'Submitted'
+        && request.resource.data.model.storagePath.matches('rfqs/' + request.auth.uid + '/' + rfqId + '/.*')
+        && (!('shipping' in request.resource.data)
+          || (validShippingAddress(request.resource.data.shipping)
+            && !('selection' in request.resource.data.shipping)));
+      allow read: if signedIn() && (resource == null || resource.data.ownerUid == request.auth.uid || (memberOf(resource.data.organizationId) && resource.data.status in ['Submitted', 'Under Review', 'Quoted', 'Preparing Production', 'In Production', 'Completed', 'Closed']));
+      allow update: if memberOf(resource.data.organizationId) && resource.data.status == 'Submitted'
         && request.resource.data.status == 'Quoted'
         && request.resource.data.quoteTotal is int
         && request.resource.data.quoteTotal > 0
@@ -164,7 +254,7 @@ service cloud.firestore {
         && !('activeKaseraPaymentAttemptId' in resource.data)
         && request.resource.data.quotedAt is int
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'quoteTotal', 'paymentStatus', 'quotedAt'])
-        || (manufacturer() && resource.data.status == 'Quoted'
+        || (memberOf(resource.data.organizationId) && resource.data.status == 'Quoted'
           && request.resource.data.status == 'Quoted'
           && request.resource.data.quoteTotal is int
           && request.resource.data.quoteTotal > 0
@@ -172,19 +262,19 @@ service cloud.firestore {
           && !('activeKaseraPaymentAttemptId' in resource.data)
           && request.resource.data.quotedAt is int
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quoteTotal', 'quotedAt']))
-        || (manufacturer() && resource.data.status == 'Preparing Production'
+        || (memberOf(resource.data.organizationId) && resource.data.status == 'Preparing Production'
           && resource.data.paymentStatus == 'Paid'
           && request.resource.data.status == 'In Production'
           && getAfter(/databases/$(database)/documents/productionOrders/$(rfqId)).data.status == 'In Production'
           && request.resource.data.productionStartedAt is int
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'productionStartedAt']))
-        || (manufacturer() && resource.data.status == 'In Production'
+        || (memberOf(resource.data.organizationId) && resource.data.status == 'In Production'
           && resource.data.paymentStatus == 'Paid'
           && request.resource.data.status == 'Completed'
           && getAfter(/databases/$(database)/documents/productionOrders/$(rfqId)).data.status == 'Completed'
           && request.resource.data.completedAt is int
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'completedAt']))
-        || (manufacturer() && resource.data.status in ['Submitted', 'Quoted']
+        || (memberOf(resource.data.organizationId) && resource.data.status in ['Submitted', 'Quoted']
           && resource.data.paymentStatus == 'Unpaid'
           && (!('estimate' in resource.data) || resource.data.estimate.status != 'processing')
           && request.resource.data.estimateRequestedAt is int

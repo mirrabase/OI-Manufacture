@@ -7,6 +7,7 @@ import { GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword } from 
 
 import { Button } from "@workspace/ui/components/button"
 import { manufacturerAuth, useFirebaseEmulator } from "@/lib/firebase/client"
+import { resolveManufacturerOrganization } from "@/lib/firebase/organization-access"
 
 export function GoogleLoginButton({ destination = "/-/overview" }: { destination?: string }) {
   const router = useRouter()
@@ -18,9 +19,11 @@ export function GoogleLoginButton({ destination = "/-/overview" }: { destination
     setIsSigningIn(true)
 
     try {
-      if (useFirebaseEmulator) await signInWithEmailAndPassword(manufacturerAuth, "manufacturer@oi.local", "local-manufacturer-123")
-      else await signInWithPopup(manufacturerAuth, new GoogleAuthProvider())
-      router.replace(destination)
+      const credential = useFirebaseEmulator
+        ? await signInWithEmailAndPassword(manufacturerAuth, "manufacturer@oi.local", "local-manufacturer-123")
+        : await signInWithPopup(manufacturerAuth, new GoogleAuthProvider())
+      const organization = await resolveManufacturerOrganization(credential.user)
+      router.replace(organization ? destination : "/waiting-list")
       router.refresh()
     } catch (cause) {
       if (
