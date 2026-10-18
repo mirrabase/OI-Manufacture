@@ -181,17 +181,20 @@ service cloud.firestore {
     }
     match /productionOrders/{rfqId} {
       allow read: if memberOf(resource.data.organizationId);
-      allow create: if memberOf(request.resource.data.organizationId)
-        && validProductionOrder(request.resource.data, rfqId)
-        && getAfter(/databases/$(database)/documents/rfqs/$(rfqId)).data.status == 'Preparing Production'
-        && getAfter(/databases/$(database)/documents/rfqs/$(rfqId)).data.paymentStatus == 'Paid';
+      allow create: if false;
       allow update: if memberOf(resource.data.organizationId)
         && validProductionOrder(request.resource.data, rfqId)
         && resource.data.rfqId == rfqId
         && get(/databases/$(database)/documents/rfqs/$(rfqId)).data.paymentStatus == 'Paid'
-        && ((resource.data.status == 'Preparing Production' && request.resource.data.status in ['Preparing Production', 'Scheduled'])
-          || (resource.data.status == 'Scheduled' && request.resource.data.status in ['Preparing Production', 'In Production'])
-          || (resource.data.status == 'In Production' && request.resource.data.status == 'Completed'));
+        && ((resource.data.status == 'Preparing Production'
+            && request.resource.data.status == 'Preparing Production'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['materialId', 'plannedGrams', 'plannedHours', 'updatedAt']))
+          || (resource.data.status == 'Preparing Production'
+            && request.resource.data.status == 'Scheduled'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'equipmentId', 'scheduledStartDate', 'estimatedCompletionDate', 'reservedKg', 'updatedAt']))
+          || (resource.data.status == 'Scheduled'
+            && request.resource.data.status == 'Preparing Production'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'equipmentId', 'scheduledStartDate', 'estimatedCompletionDate', 'reservedKg', 'updatedAt'])));
       allow delete: if false;
     }
     match /notifications/{notificationId} {
@@ -246,45 +249,12 @@ service cloud.firestore {
           || (validShippingAddress(request.resource.data.shipping)
             && !('selection' in request.resource.data.shipping)));
       allow read: if signedIn() && (resource == null || resource.data.ownerUid == request.auth.uid || (memberOf(resource.data.organizationId) && resource.data.status in ['Submitted', 'Under Review', 'Quoted', 'Preparing Production', 'In Production', 'Completed', 'Closed']));
-      allow update: if memberOf(resource.data.organizationId) && resource.data.status == 'Submitted'
-        && request.resource.data.status == 'Quoted'
-        && request.resource.data.quoteTotal is int
-        && request.resource.data.quoteTotal > 0
-        && request.resource.data.paymentStatus == 'Unpaid'
-        && !('activeKaseraPaymentAttemptId' in resource.data)
-        && request.resource.data.quotedAt is int
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'quoteTotal', 'paymentStatus', 'quotedAt'])
-        || (memberOf(resource.data.organizationId) && resource.data.status == 'Quoted'
-          && request.resource.data.status == 'Quoted'
-          && request.resource.data.quoteTotal is int
-          && request.resource.data.quoteTotal > 0
-          && request.resource.data.paymentStatus == 'Unpaid'
-          && !('activeKaseraPaymentAttemptId' in resource.data)
-          && request.resource.data.quotedAt is int
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quoteTotal', 'quotedAt']))
-        || (memberOf(resource.data.organizationId) && resource.data.status == 'Preparing Production'
-          && resource.data.paymentStatus == 'Paid'
-          && request.resource.data.status == 'In Production'
-          && getAfter(/databases/$(database)/documents/productionOrders/$(rfqId)).data.status == 'In Production'
-          && request.resource.data.productionStartedAt is int
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'productionStartedAt']))
-        || (memberOf(resource.data.organizationId) && resource.data.status == 'In Production'
-          && resource.data.paymentStatus == 'Paid'
-          && request.resource.data.status == 'Completed'
-          && getAfter(/databases/$(database)/documents/productionOrders/$(rfqId)).data.status == 'Completed'
-          && request.resource.data.completedAt is int
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'completedAt']))
-        || (memberOf(resource.data.organizationId) && resource.data.status in ['Submitted', 'Quoted']
+      allow update: if memberOf(resource.data.organizationId) && resource.data.status in ['Submitted', 'Quoted']
           && resource.data.paymentStatus == 'Unpaid'
           && (!('estimate' in resource.data) || resource.data.estimate.status != 'processing')
           && request.resource.data.estimateRequestedAt is int
           && request.resource.data.estimateRequestedAt > resource.data.get('estimateRequestedAt', 0)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estimateRequestedAt']))
-        || (signedIn() && resource.data.ownerUid == request.auth.uid
-        && resource.data.status == 'Draft'
-        && request.resource.data.status == 'Submitted'
-        && request.resource.data.submittedAt is int
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'submittedAt']));
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estimateRequestedAt']);
       allow delete: if false;
     }
     match /{document=**} { allow read, write: if false; }

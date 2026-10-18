@@ -12,8 +12,8 @@ import {
   type DocumentData,
   type QueryDocumentSnapshot,
 } from "firebase/firestore"
-import { httpsCallable } from "firebase/functions"
-import { manufacturerDb, manufacturerFunctions } from "./client"
+import { manufacturerDb } from "./client"
+import { callApi } from "./api"
 import {
   getProductionReadiness,
   getCompatibleEquipment,
@@ -58,8 +58,7 @@ export function listenToProductionOrder(id: string, onValue: (order: ProductionO
 }
 
 export async function confirmRequestPayment(id: string) {
-  const confirm = httpsCallable<{ rfqId: string }, { ok: true }>(manufacturerFunctions, "confirmManualPayment")
-  await confirm({ rfqId: id })
+  await callApi("payments/manual-confirm", { rfqId: id }, true)
 }
 
 export async function saveMaterial(value: Omit<MaterialRecord, "id" | "organizationId" | "stock" | "reserved">, id?: string) {
@@ -243,61 +242,9 @@ export async function unscheduleProduction(id: string) {
 }
 
 export async function startProduction(id: string) {
-  await runTransaction(manufacturerDb, async (transaction) => {
-    const planRef = doc(productionOrders, id)
-    const requestRef = doc(manufacturerDb, "rfqs", id)
-    const [planSnapshot, requestSnapshot] = await Promise.all([transaction.get(planRef), transaction.get(requestRef)])
-    if (!planSnapshot.exists() || !requestSnapshot.exists() || planSnapshot.data().status !== "Scheduled" || requestSnapshot.data().status !== "Preparing Production") {
-      throw new Error("Schedule this order before starting production.")
-    }
-    const now = Date.now()
-    const plan = { id, ...planSnapshot.data() } as ProductionOrder
-    const machineRef = doc(equipment, plan.equipmentId)
-    const machineSnapshot = await transaction.get(machineRef)
-    if (!machineSnapshot.exists()) throw new Error("The assigned machine is missing.")
-    const activeId = machineSnapshot.data().activeProductionOrderId as string | undefined
-    if (activeId && activeId !== id) {
-      const activePlan = await transaction.get(doc(productionOrders, activeId))
-      if (activePlan.exists() && activePlan.data().status === "In Production") {
-        throw new Error("This machine is already running another production order.")
-      }
-    }
-    transaction.update(machineRef, { status: "Scheduled", activeProductionOrderId: id, updatedAt: now })
-    transaction.update(planRef, { status: "In Production", updatedAt: now })
-    transaction.update(requestRef, { status: "In Production", productionStartedAt: now })
-  })
+  await callApi(`rfqs/${encodeURIComponent(id)}/production/start`, {}, true)
 }
 
 export async function completeProduction(id: string, actualGrams: number) {
-  if (!Number.isFinite(actualGrams) || actualGrams <= 0 || actualGrams > 100_000_000) throw new Error("Enter actual filament usage in grams.")
-  const organizationId = await getCurrentOrganizationId()
-  const actualKg = Math.round((actualGrams / 1000) * 1000) / 1000
-  await runTransaction(manufacturerDb, async (transaction) => {
-    const planRef = doc(productionOrders, id)
-    const requestRef = doc(manufacturerDb, "rfqs", id)
-    const [planSnapshot, requestSnapshot] = await Promise.all([transaction.get(planRef), transaction.get(requestRef)])
-    if (!planSnapshot.exists() || !requestSnapshot.exists()) throw new Error("Production order not found.")
-    const plan = { id, ...planSnapshot.data() } as ProductionOrder
-    if (plan.status !== "In Production" || requestSnapshot.data().status !== "In Production") throw new Error("Only active production can be completed.")
-    const materialRef = doc(materials, plan.materialId)
-    const machineRef = doc(equipment, plan.equipmentId)
-    const [materialSnapshot, machineSnapshot] = await Promise.all([transaction.get(materialRef), transaction.get(machineRef)])
-    if (!materialSnapshot.exists() || !machineSnapshot.exists()) throw new Error("The assigned material or machine is missing.")
-    const material = materialSnapshot.data() as MaterialRecord
-    const remainingReservations = Math.max(0, material.reserved - plan.reservedKg)
-    const nextStock = Math.round((material.stock - actualKg) * 1000) / 1000
-    if (nextStock < remainingReservations) throw new Error("Actual usage exceeds unreserved stock. Adjust inventory before completing this job.")
-    const now = Date.now()
-    const remainingScheduledHours = Math.max(0, Math.round((machineSnapshot.data().scheduledHours - plan.plannedHours) * 100) / 100)
-    transaction.update(materialRef, { stock: nextStock, reserved: remainingReservations, updatedAt: now })
-    transaction.update(machineRef, {
-      status: remainingScheduledHours > 0 ? "Scheduled" : "Available",
-      activeProductionOrderId: deleteField(),
-      scheduledHours: remainingScheduledHours,
-      updatedAt: now,
-    })
-    transaction.update(planRef, { status: "Completed", reservedKg: 0, actualGrams, updatedAt: now })
-    transaction.update(requestRef, { status: "Completed", completedAt: now })
-    transaction.set(doc(inventoryMovements), { organizationId, type: "consumption", materialId: plan.materialId, deltaKg: -actualKg, reservedDeltaKg: -plan.reservedKg, referenceId: id, createdAt: now })
-  })
+  await callApi(`rfqs/${encodeURIComponent(id)}/production/complete`, { actualGrams }, true)
 }

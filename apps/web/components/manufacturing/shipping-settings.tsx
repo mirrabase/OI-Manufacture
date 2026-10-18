@@ -1,11 +1,11 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { httpsCallable } from "firebase/functions"
 import { doc, onSnapshot, updateDoc } from "firebase/firestore"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
-import { manufacturerDb, manufacturerFunctions } from "@/lib/firebase/client"
+import { manufacturerDb } from "@/lib/firebase/client"
+import { callApi } from "@/lib/firebase/api"
 import { useManufacturerOrganization } from "./organization-provider"
 
 type ShippingOrigin = {
@@ -54,9 +54,8 @@ export function ShippingSettings() {
     const timer = window.setTimeout(async () => {
       setSearching(true)
       try {
-        const searchLocations = httpsCallable<{ scope: "domestic"; search: string }, { destinations: Destination[] }>(manufacturerFunctions, "searchShippingLocations")
-        const result = await searchLocations({ scope: "domestic", search: search.trim() })
-        setDestinations(result.data.destinations)
+        const result = await callApi<{ destinations: Destination[] }>("shipping/locations", { scope: "domestic", search: search.trim() }, true)
+        setDestinations(result.destinations)
         setError("")
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Could not search shipping locations.")

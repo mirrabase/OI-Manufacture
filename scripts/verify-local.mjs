@@ -1,20 +1,18 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
-import { db, auth as adminAuth, bucket, seedLocalData, projectId } from './local-firebase.mjs'
+import { db, auth as adminAuth, seedLocalData, projectId } from './local-firebase.mjs'
 import { defaultPricing } from '../apps/web/lib/pricing.ts'
 import { getProductionReadiness } from '../apps/web/lib/manufacturing-operations.ts'
 
 const require = createRequire(new URL('../apps/web/package.json', import.meta.url))
 const { initializeApp, deleteApp } = require('firebase/app')
 const { getAuth, connectAuthEmulator, signInAnonymously, signInWithEmailAndPassword } = require('firebase/auth')
-const { getFirestore, connectFirestoreEmulator, doc, setDoc, updateDoc, getDoc, onSnapshot, query, collection, where, orderBy, runTransaction, deleteField, terminate, setLogLevel } = require('firebase/firestore')
+const { getFirestore, connectFirestoreEmulator, doc, setDoc, updateDoc, getDoc, onSnapshot, query, collection, where, orderBy, runTransaction, terminate, setLogLevel } = require('firebase/firestore')
 const { FieldValue } = require('firebase-admin/firestore')
-const { getStorage, connectStorageEmulator, ref, getBytes, uploadBytes } = require('firebase/storage')
 setLogLevel('silent')
 const clients = []
 const rfqIds = []
-const files = []
 const internalPaths = []
 let inactiveUid
 let waitlistUid
@@ -22,16 +20,13 @@ let previousPricing
 let previousShippingOrigin
 
 function client(name) {
-  const app = initializeApp({ projectId, apiKey: 'demo-api-key', storageBucket: `${projectId}.appspot.com` }, `verify-${name}-${randomUUID()}`)
+  const app = initializeApp({ projectId, apiKey: 'demo-api-key' }, `verify-${name}-${randomUUID()}`)
   const auth = getAuth(app)
   connectAuthEmulator(auth, `http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true })
   const firestore = getFirestore(app)
   const [host, port] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
   connectFirestoreEmulator(firestore, host, Number(port))
-  const storage = getStorage(app)
-  const [storageHost, storagePort] = process.env.FIREBASE_STORAGE_EMULATOR_HOST.split(':')
-  connectStorageEmulator(storage, storageHost, Number(storagePort))
-  const value = { app, auth, firestore, storage }
+  const value = { app, auth, firestore }
   clients.push(value)
   return value
 }
@@ -97,7 +92,6 @@ try {
   rfqIds.push(id, noQuoteId)
   const uid = owner.auth.currentUser.uid
   const path = `rfqs/${uid}/${id}/model.stl`
-  files.push(path)
   const ownDoc = doc(owner.firestore, 'rfqs', id)
   const noQuoteDoc = doc(owner.firestore, 'rfqs', noQuoteId)
   const shippingAddress = { recipientName: 'Test receiver', phone: '081234567890', addressLine: 'Customer street 2', postalCode: '40124', destination: { scope: 'domestic', id: 456, label: 'Sumur Bandung, Bandung' } }
@@ -107,9 +101,9 @@ try {
   await denied(() => setDoc(ownDoc, { ...draft, requirements: { ...draft.requirements, infillPercent: 101 } }))
   await denied(() => setDoc(doc(owner.firestore, 'rfqs', `${id}-fake-shipping`), requestDraft(uid, `${id}-fake-shipping`, { shipping: { address: shippingAddress, selection: { id: 'jne:REG:1000:IDR', courierCode: 'jne', courierName: 'JNE', service: 'REG', description: '', cost: 1000, etd: '2 days', currency: 'IDR' } } })))
   await setDoc(ownDoc, draft)
-  await uploadBytes(ref(owner.storage, path), new TextEncoder().encode('verification STL'), { contentType: 'model/stl' })
   await db.doc(`rfqs/${id}`).update({ estimate: { status: 'unsupported', requestedAt: 0, error: 'Verification fixture' } })
-  await updateDoc(ownDoc, { status: 'Submitted', submittedAt: Date.now() })
+  await denied(() => updateDoc(ownDoc, { status: 'Submitted', submittedAt: Date.now() }))
+  await db.doc(`rfqs/${id}`).update({ status: 'Submitted', submittedAt: Date.now() })
 
   // Customer submission does not query materials or equipment, even when local stock is empty.
   const materialId = `${id}-material`
@@ -141,13 +135,13 @@ try {
   )
   assert.equal(readiness.ready, false)
   assert.match(readiness.blockers.join(' '), /Short 0\.500 kg/)
-  const capacity = getProductionReadiness(
+  const queuedCapacity = getProductionReadiness(
     { ...requestDraft(uid, id), id, status: 'Preparing Production', paymentStatus: 'Paid' },
     { id, organizationId: 'demo', rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
     [{ id: materialId, name: 'PLA', stock: 2, reserved: 0, reorderAt: 0.5 }],
     [{ id: equipmentId, name: 'Test printer', technology: 'FDM', compatibleMaterialIds: [materialId], buildVolumeMm: [10, 10, 10], workingHours: 8, scheduledHours: 7.5, status: 'Available' }],
   )
-  assert.match(capacity.blockers.join(' '), /not have enough working hours/)
+  assert.equal(queuedCapacity.ready, true, 'queued machine hours are scheduled for a later available production slot')
   const tpuRequest = { ...requestDraft(uid, id), id, status: 'Preparing Production', paymentStatus: 'Paid', requirements: { quantity: 1, material: 'TPU', process: 'FDM', unit: 'mm', notes: '' } }
   const tpuReadiness = getProductionReadiness(tpuRequest,
     { id, organizationId: 'demo', rfqId: id, status: 'Preparing Production', materialId, equipmentId, plannedGrams: 500, plannedHours: 1, reservedKg: 0, createdAt: Date.now(), updatedAt: Date.now() },
@@ -156,7 +150,7 @@ try {
   )
   assert.equal(tpuReadiness.ready, true)
   await setDoc(noQuoteDoc, requestDraft(uid, noQuoteId))
-  await updateDoc(noQuoteDoc, { status: 'Submitted', submittedAt: Date.now() })
+  await db.doc(`rfqs/${noQuoteId}`).update({ status: 'Submitted', submittedAt: Date.now() })
   await denied(() => getDoc(doc(owner.firestore, 'materials', materialId)))
   await denied(() => getDoc(doc(owner.firestore, 'equipment', equipmentId)))
   await denied(() => getDoc(doc(owner.firestore, 'purchaseOrders', purchaseId)))
@@ -164,7 +158,6 @@ try {
   await denied(() => getDoc(doc(inactive.firestore, 'materials', materialId)))
   assert.equal((await getDoc(doc(manufacturer.firestore, 'materials', materialId))).data().stock, 0)
 
-  await denied(() => uploadBytes(ref(owner.storage, path), new TextEncoder().encode('changed'), { contentType: 'model/stl' }))
   await denied(() => getDoc(doc(other.firestore, 'rfqs', id)))
   await denied(() => getDoc(doc(inactive.firestore, 'rfqs', id)))
   await denied(() => updateDoc(ownDoc, { estimate: { status: 'ready', total: 1 } }))
@@ -177,7 +170,8 @@ try {
   await setDoc(doc(manufacturer.firestore, 'pricing/demo'), previousPricing)
 
   const quoteSeen = waitFor(ownDoc, (snapshot) => snapshot.data()?.quoteTotal === 42_000 && snapshot.data()?.status === 'Quoted')
-  await updateDoc(doc(manufacturer.firestore, 'rfqs', id), { status: 'Quoted', quoteTotal: 42_000, paymentStatus: 'Unpaid', quotedAt: Date.now() })
+  await denied(() => updateDoc(doc(manufacturer.firestore, 'rfqs', id), { status: 'Quoted', quoteTotal: 42_000, paymentStatus: 'Unpaid', quotedAt: Date.now() }))
+  await db.doc(`rfqs/${id}`).update({ status: 'Quoted', quoteTotal: 42_000, paymentStatus: 'Unpaid', quotedAt: Date.now() })
   await quoteSeen
   await denied(() => updateDoc(ownDoc, { shipping: { address: shippingAddress, selection: { id: 'jne:REG:1000:IDR', courierCode: 'jne', courierName: 'JNE', service: 'REG', description: '', cost: 1000, etd: '2 days', currency: 'IDR' } } }))
   await denied(() => updateDoc(ownDoc, { status: 'Preparing Production', paymentStatus: 'Paid', paidAt: Date.now() }))
@@ -204,15 +198,6 @@ try {
   await denied(() => getDoc(doc(manufacturer.firestore, 'kaseraPaymentAttempts', attemptId)))
   await denied(() => updateDoc(doc(manufacturer.firestore, 'rfqs', id), { quoteTotal: 43_000, quotedAt: Date.now() }))
   await db.doc(`rfqs/${id}`).update({ activeKaseraPaymentAttemptId: FieldValue.delete() })
-
-  const preview = `rfqs/${uid}/${id}/preview.gcode`
-  files.push(preview)
-  await bucket.file(preview).save('G1 X1 Y1 E1\n', { contentType: 'text/plain' })
-  assert.ok((await getBytes(ref(owner.storage, preview))).byteLength > 0)
-  assert.ok((await getBytes(ref(manufacturer.storage, preview))).byteLength > 0)
-  await denied(() => getBytes(ref(other.storage, preview)))
-  await denied(() => getBytes(ref(inactive.storage, preview)))
-  await denied(() => uploadBytes(ref(owner.storage, preview), new TextEncoder().encode('tampered'), { contentType: 'text/plain' }))
 
   const now = Date.now()
   const requestRef = db.doc(`rfqs/${id}`)
@@ -252,25 +237,29 @@ try {
     transaction.update(planRef, { status: 'Scheduled', reservedKg: 0.5, updatedAt: Date.now() })
     transaction.set(doc(manufacturer.firestore, 'inventoryMovements', scheduleMovementId), { organizationId: 'demo', type: 'reservation', materialId, deltaKg: 0, reservedDeltaKg: 0.5, referenceId: id, createdAt: Date.now() })
   })
-  await runTransaction(manufacturer.firestore, async (transaction) => {
+  await denied(() => runTransaction(manufacturer.firestore, async (transaction) => {
     const requestRef = doc(manufacturer.firestore, 'rfqs', id)
     const planRef = doc(manufacturer.firestore, 'productionOrders', id)
     transaction.update(planRef, { status: 'In Production', updatedAt: Date.now() })
     transaction.update(requestRef, { status: 'In Production', productionStartedAt: Date.now() })
+  }))
+  await db.runTransaction(async (transaction) => {
+    transaction.update(db.doc(`productionOrders/${id}`), { status: 'In Production', updatedAt: Date.now() })
+    transaction.update(db.doc(`rfqs/${id}`), { status: 'In Production', productionStartedAt: Date.now() })
   })
   const customerInProduction = waitFor(doc(owner.firestore, 'rfqs', id), (snapshot) => snapshot.data()?.status === 'In Production')
   await customerInProduction
-  await runTransaction(manufacturer.firestore, async (transaction) => {
-    const materialRef = doc(manufacturer.firestore, 'materials', materialId)
-    const equipmentRef = doc(manufacturer.firestore, 'equipment', equipmentId)
-    const planRef = doc(manufacturer.firestore, 'productionOrders', id)
-    const requestRef = doc(manufacturer.firestore, 'rfqs', id)
+  await db.runTransaction(async (transaction) => {
+    const materialRef = db.doc(`materials/${materialId}`)
+    const equipmentRef = db.doc(`equipment/${equipmentId}`)
+    const planRef = db.doc(`productionOrders/${id}`)
+    const requestRef = db.doc(`rfqs/${id}`)
     const [material, machine] = await Promise.all([transaction.get(materialRef), transaction.get(equipmentRef)])
     transaction.update(materialRef, { stock: material.data().stock - 0.2, reserved: material.data().reserved - 0.5, updatedAt: Date.now() })
-    transaction.update(equipmentRef, { status: 'Available', scheduledHours: machine.data().scheduledHours - 1, activeProductionOrderId: deleteField(), updatedAt: Date.now() })
+    transaction.update(equipmentRef, { status: 'Available', scheduledHours: machine.data().scheduledHours - 1, activeProductionOrderId: FieldValue.delete(), updatedAt: Date.now() })
     transaction.update(planRef, { status: 'Completed', reservedKg: 0, actualGrams: 200, updatedAt: Date.now() })
     transaction.update(requestRef, { status: 'Completed', completedAt: Date.now() })
-    transaction.set(doc(manufacturer.firestore, 'inventoryMovements', completeMovementId), { organizationId: 'demo', type: 'consumption', materialId, deltaKg: -0.2, reservedDeltaKg: -0.5, referenceId: id, createdAt: Date.now() })
+    transaction.set(db.doc(`inventoryMovements/${completeMovementId}`), { organizationId: 'demo', type: 'consumption', materialId, deltaKg: -0.2, reservedDeltaKg: -0.5, referenceId: id, createdAt: Date.now() })
   })
   await waitFor(doc(owner.firestore, 'rfqs', id), (snapshot) => snapshot.data()?.status === 'Completed')
   assert.equal((await getDoc(doc(manufacturer.firestore, 'materials', materialId))).data().stock, 1.8)
@@ -283,7 +272,6 @@ try {
   else await db.doc('organizations/demo').update({ shippingOrigin: FieldValue.delete() })
   for (const id of rfqIds) await db.doc(`rfqs/${id}`).delete()
   for (const path of internalPaths) await db.doc(path).delete()
-  for (const path of files) await bucket.file(path).delete({ ignoreNotFound: true })
   if (inactiveUid) await db.doc(`manufacturers/${inactiveUid}`).delete()
   for (const value of clients) {
     if (value.auth.currentUser && value.auth.currentUser.uid !== 'local-manufacturer') await adminAuth.deleteUser(value.auth.currentUser.uid)

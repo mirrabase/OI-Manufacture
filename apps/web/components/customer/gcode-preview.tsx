@@ -4,8 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import { GCodeLoader } from "three/examples/jsm/loaders/GCodeLoader.js"
-import { getBytes, ref } from "firebase/storage"
-import { manufacturerStorage, storage } from "@/lib/firebase/client"
+import { fetchRfqObject } from "@/lib/firebase/api"
 
 export default function GcodePreview({ path, asManufacturer = false }: { path: string; asManufacturer?: boolean }) {
   const mount = useRef<HTMLDivElement>(null)
@@ -20,7 +19,7 @@ export default function GcodePreview({ path, asManufacturer = false }: { path: s
     let cleanup: (() => void) | undefined
     setError(""); setLayers(0)
     void (async () => {
-      const bytes = await getBytes(ref(asManufacturer ? manufacturerStorage : storage, path), 50 * 1024 * 1024)
+      const bytes = await fetchRfqObject(path, asManufacturer)
       if (cancelled) return
       const loader = new GCodeLoader()
       loader.splitLayer = true

@@ -1,5 +1,4 @@
-import { httpsCallable } from "firebase/functions"
-import { manufacturerFunctions } from "./client"
+import { callApi } from "./api"
 
 export type ManufacturerChatMessage = {
   role: "user" | "assistant"
@@ -36,17 +35,9 @@ export type ManufacturerOverview = {
 }
 
 export async function askManufacturerAssistant(messages: ManufacturerChatMessage[]) {
-  const call = httpsCallable<
-    { messages: ManufacturerChatMessage[] },
-    ManufacturerChatReply
-  >(manufacturerFunctions, "manufacturerChat")
-  return (await call({ messages })).data
+  return callApi<ManufacturerChatReply>("ai/chat", { messages }, true)
 }
 
 export async function getManufacturerOverview() {
-  const call = httpsCallable<Record<string, never>, ManufacturerOverview>(
-    manufacturerFunctions,
-    "manufacturerOverview"
-  )
-  return (await call({})).data
+  return callApi<ManufacturerOverview>("ai/overview", {}, true)
 }

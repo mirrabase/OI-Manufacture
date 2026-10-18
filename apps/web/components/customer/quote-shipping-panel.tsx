@@ -1,14 +1,13 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { httpsCallable } from "firebase/functions"
 import { CheckCircle2Icon, Loader2Icon, MapPinIcon, TruckIcon } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@workspace/ui/components/card"
 import { Input } from "@workspace/ui/components/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@workspace/ui/components/select"
-import { functions } from "@/lib/firebase/client"
+import { callApi } from "@/lib/firebase/api"
 import { formatIDR, type CustomerRFQ, type ShippingAddress, type ShippingDestination, type ShippingDestinationOption, type ShippingRate } from "@/lib/customer-portal"
 import { readCustomerProfile, saveCustomerProfile } from "@/lib/customer-profile"
 
@@ -75,12 +74,11 @@ export function QuoteShippingPanel({ rfq, uid, preferredRate, showAddress = true
     setChosenRateId("")
     setLoadingRates(true)
     setError("")
-    const getRates = httpsCallable<{ rfqId: string }, { rates: ShippingRate[] }>(functions, "getCustomerShippingRates")
-    void getRates({ rfqId: rfq.id })
+    void callApi<{ rates: ShippingRate[] }>("shipping/rates", { rfqId: rfq.id })
       .then((result) => {
         if (!active) return
-        setRates(result.data.rates)
-        const preferred = result.data.rates.find((rate) => rate.courierCode === preferredRate?.courierCode && rate.service === preferredRate.service)
+        setRates(result.rates)
+        const preferred = result.rates.find((rate) => rate.courierCode === preferredRate?.courierCode && rate.service === preferredRate.service)
         setChosenRateId(preferred?.id ?? "")
       })
       .catch((cause: unknown) => { if (active) setError(shippingErrorMessage(cause, "Shipping rates could not be calculated.")) })
@@ -98,12 +96,8 @@ export function QuoteShippingPanel({ rfq, uid, preferredRate, showAddress = true
     const timer = window.setTimeout(async () => {
       setSearchingDestination(true)
       try {
-        const searchLocations = httpsCallable<
-          { scope: "auto"; search: string },
-          { destinations: ShippingDestinationOption[] }
-        >(functions, "searchShippingLocations")
-        const result = await searchLocations({ scope: "auto", search: destinationSearch.trim() })
-        if (active) setDestinations(result.data.destinations)
+        const result = await callApi<{ destinations: ShippingDestinationOption[] }>("shipping/locations", { scope: "auto", search: destinationSearch.trim() })
+        if (active) setDestinations(result.destinations)
       } catch (cause) {
         if (active) setError(shippingErrorMessage(cause, "Location could not be searched."))
       } finally {
@@ -128,11 +122,7 @@ export function QuoteShippingPanel({ rfq, uid, preferredRate, showAddress = true
     setSavingAddress(true)
     setError("")
     try {
-      const save = httpsCallable<
-        { rfqId: string; address: ShippingAddress },
-        { ok: boolean; address: ShippingAddress }
-      >(functions, "saveCustomerShippingAddress")
-      await save({ rfqId: rfq.id, address })
+      await callApi("shipping/address", { rfqId: rfq.id, address })
       saveCustomerProfile(uid, { name: rfq.customer.name, email: rfq.customer.email, shipping: address })
       setAddressRevision((revision) => revision + 1)
       setEditingAddress(false)
@@ -148,8 +138,7 @@ export function QuoteShippingPanel({ rfq, uid, preferredRate, showAddress = true
     setSavingRate(true)
     setError("")
     try {
-      const selectRate = httpsCallable<{ rfqId: string; rateId: string }, { ok: boolean }>(functions, "selectCustomerShippingRate")
-      await selectRate({ rfqId: rfq.id, rateId: chosenRateId })
+      await callApi("shipping/select", { rfqId: rfq.id, rateId: chosenRateId })
       setRates([])
     } catch (cause) {
       setError(shippingErrorMessage(cause, "Shipping service could not be saved."))

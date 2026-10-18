@@ -7,7 +7,7 @@ import { resolve } from 'node:path'
 await mkdir('.local', { recursive: true })
 const servicesPidFile = resolve(`.local/dev-services-${process.pid}.pid`)
 
-const args = ['emulators:exec', '--project', 'demo-oi-manufacture', '--only', 'auth,firestore,storage,functions',
+const args = ['emulators:exec', '--project', 'demo-oi-manufacture', '--only', 'auth,firestore',
   '--export-on-exit=.local/firebase-data']
 if (existsSync('.local/firebase-data/firebase-export-metadata.json')) args.push('--import=.local/firebase-data')
 args.push('node scripts/dev-services.mjs')

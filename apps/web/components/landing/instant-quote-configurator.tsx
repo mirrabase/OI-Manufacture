@@ -4,7 +4,6 @@ import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useEffect, useMemo, useState } from "react"
 import { onAuthStateChanged, signInAnonymously, type User } from "firebase/auth"
-import { httpsCallable } from "firebase/functions"
 import {
   ArrowRightIcon,
   BoxIcon,
@@ -32,7 +31,8 @@ import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@workspace/ui/components/select"
 import { cn } from "@workspace/ui/lib/utils"
-import { auth, functions } from "@/lib/firebase/client"
+import { auth } from "@/lib/firebase/client"
+import { callApi } from "@/lib/firebase/api"
 import {
   downloadModel,
   listenToCustomerRequest,
@@ -276,12 +276,8 @@ export function InstantQuoteConfigurator() {
       setSearchingShippingDestinations(true)
       setShippingAddressError("")
       try {
-        const searchLocations = httpsCallable<
-          { scope: "auto"; search: string },
-          { destinations: ShippingDestinationOption[] }
-        >(functions, "searchShippingLocations")
-        const result = await searchLocations({ scope: "auto", search: shippingDestinationSearch.trim() })
-        if (active) setShippingDestinations(result.data.destinations)
+        const result = await callApi<{ destinations: ShippingDestinationOption[] }>("shipping/locations", { scope: "auto", search: shippingDestinationSearch.trim() })
+        if (active) setShippingDestinations(result.destinations)
       } catch (cause) {
         if (active) setShippingAddressError(cause instanceof Error ? cause.message : "Could not search delivery locations.")
       } finally {
@@ -484,21 +480,14 @@ export function InstantQuoteConfigurator() {
     const timer = window.setTimeout(async () => {
       setLoadingProductionLeadTime(true)
       try {
-        const estimate = httpsCallable<{
-          organizationId: string
-          materialName: string
-          process: string
-          dimensionsMm: [number, number, number]
-          plannedHours: number
-        }, { leadTimeDays: number | null }>(functions, "getCustomerProductionLeadTime")
-        const result = await estimate({
+        const result = await callApi<{ leadTimeDays: number | null }>("production/lead-time", {
           organizationId: DEMO_ORGANIZATION_ID,
           materialName: material,
           process: processType,
           dimensionsMm: model.boundingBoxMm,
           plannedHours: quotation.totalHours,
         })
-        if (active) setProductionLeadTimeDays(result.data.leadTimeDays)
+        if (active) setProductionLeadTimeDays(result.leadTimeDays)
       } catch {
         if (active) setProductionLeadTimeDays(null)
       } finally {
@@ -531,17 +520,13 @@ export function InstantQuoteConfigurator() {
     setSelectedShippingPreviewRate(null)
     const timer = window.setTimeout(async () => {
       try {
-        const previewShippingRates = httpsCallable<
-          { organizationId: string; destination: ShippingDestination; weightGrams: number; dimensionsMm: number[] },
-          { rates: ShippingRate[] }
-        >(functions, "getCustomerShippingRatePreview")
-        const result = await previewShippingRates({
+        const result = await callApi<{ rates: ShippingRate[] }>("shipping/preview", {
           organizationId: DEMO_ORGANIZATION_ID,
           destination: shippingDestination,
           weightGrams,
           dimensionsMm: model.boundingBoxMm,
         })
-        if (active) setShippingPreviewRates(result.data.rates)
+        if (active) setShippingPreviewRates(result.rates)
       } catch (cause) {
         if (active) setShippingPreviewError(cause instanceof Error ? cause.message : "Ongkir belum bisa dihitung.")
       } finally {
@@ -551,7 +536,7 @@ export function InstantQuoteConfigurator() {
     return () => { active = false; window.clearTimeout(timer) }
   }, [file, model, quotation, shippingDestination, shippingPreviewRevision, submittedRfqId, user])
 
-  // Submit and upload to Firebase
+  // Submit and upload to R2
   async function handleSubmitOrder() {
     if (!user) {
       setSubmitError("Sesi guest belum siap. Muat ulang halaman dan coba lagi.")
@@ -643,8 +628,7 @@ export function InstantQuoteConfigurator() {
     setShippingAddressError("")
     setShippingAddressSaved(false)
     try {
-      const saveAddress = httpsCallable<{ rfqId: string; address: ShippingAddress }, { ok: boolean }>(functions, "saveCustomerShippingAddress")
-      await saveAddress({ rfqId: submittedRfqId, address })
+      await callApi("shipping/address", { rfqId: submittedRfqId, address })
       saveCustomerProfile(user.uid, { name: contactName.trim(), email: contactEmail.trim(), shipping: address })
       setShippingAddressSaved(true)
     } catch (cause) {
@@ -663,16 +647,11 @@ export function InstantQuoteConfigurator() {
       returnUrl.searchParams.set("orderId", rfq.id)
       returnUrl.searchParams.set("payment", "return")
 
-      const createCheckout = httpsCallable<
-        { rfqId: string; returnUrl: string },
-        { checkoutUrl: string }
-      >(functions, "createKaseraCheckout")
-
-      const result = await createCheckout({
+      const result = await callApi<{ checkoutUrl: string }>("payments/kasera/checkout", {
         rfqId: rfq.id,
         returnUrl: returnUrl.toString(),
       })
-      window.location.assign(result.data.checkoutUrl)
+      window.location.assign(result.checkoutUrl)
     } catch (err) {
       setPaymentError(
         err instanceof Error ? err.message : "Gagal membuka checkout pembayaran Kasera."
